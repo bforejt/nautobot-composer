@@ -1,0 +1,140 @@
+---
+# Nautobot 3.0 — Docker Compose
+# Docs: https://docs.nautobot.com/projects/core/en/stable/user-guide/administration/guides/docker/
+
+x-nautobot-build: &nautobot-build
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+x-nautobot-env: &nautobot-env
+  env_file:
+    - .env
+
+x-nautobot-depends: &nautobot-depends
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+x-nautobot-volumes: &nautobot-volumes
+  volumes:
+    - nautobot_media:/opt/nautobot/media
+    - nautobot_git:/opt/nautobot/git
+    - nautobot_jobs:/opt/nautobot/jobs
+    # Bind-mount the config for live editing without rebuilds:
+    # - ./nautobot_config.py:/opt/nautobot/nautobot_config.py:ro
+
+services:
+  # --------------------------------------------------------------------------
+  # Nautobot — Web Application Server (uWSGI)
+  # --------------------------------------------------------------------------
+  nautobot:
+    <<: [*nautobot-build, *nautobot-env, *nautobot-depends, *nautobot-volumes]
+    container_name: nautobot
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Celery Worker — Background Task Execution
+  # --------------------------------------------------------------------------
+  celery_worker:
+    <<: [*nautobot-build, *nautobot-env, *nautobot-depends, *nautobot-volumes]
+    container_name: nautobot-celery-worker
+    command: nautobot-server celery worker --loglevel INFO --events
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nautobot:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "nautobot-server celery inspect ping --destination celery@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Celery Beat — Scheduled Task Orchestration
+  # --------------------------------------------------------------------------
+  celery_beat:
+    <<: [*nautobot-build, *nautobot-env, *nautobot-depends, *nautobot-volumes]
+    container_name: nautobot-celery-beat
+    command: nautobot-server celery beat --loglevel INFO
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nautobot:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "test -f /tmp/celerybeat.pid && kill -0 $(cat /tmp/celerybeat.pid)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # PostgreSQL 16 — Primary Database
+  # --------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: nautobot-db
+    env_file:
+      - .env
+    volumes:
+      - nautobot_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Redis 7 — Cache, Broker, and Lock Backend
+  # --------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: nautobot-redis
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - nautobot_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  nautobot_postgres_data:
+    driver: local
+  nautobot_redis_data:
+    driver: local
+  nautobot_media:
+    driver: local
+  nautobot_git:
+    driver: local
+  nautobot_jobs:
+    driver: local

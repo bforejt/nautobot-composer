@@ -1,0 +1,50 @@
+# =============================================================================
+# Nautobot Apps (Plugins)
+# =============================================================================
+# Add Nautobot Apps here, one per line. After adding an app, you must also:
+#   1. Add the app name to PLUGINS in nautobot_config.py
+#   2. Optionally configure it under PLUGINS_CONFIG in nautobot_config.py
+#   3. Rebuild: docker compose build --no-cache && docker compose up -d
+#
+# Pin versions for reproducible builds. Use ~= for compatible release pins.
+# =============================================================================
+
+# --- Device Lifecycle Management ---
+# Tracks end-of-life, end-of-support, and software compliance
+nautobot-device-lifecycle-mgmt
+
+# --- Single Source of Truth (SSoT) ---
+# Synchronize data between Nautobot and external systems
+nautobot-ssot
+
+# --- Golden Config ---
+# Intended/actual config management, compliance, and remediation
+nautobot-golden-config
+
+# --- Nornir / Nornir Nautobot ---
+# Required by several automation-oriented apps
+nornir-nautobot
+
+# --- ChatOps ---
+# Slack/Teams/Webex integration for Nautobot operations
+nautobot-chatops
+
+# --- Circuit Maintenance ---
+# Parse and track provider maintenance notifications
+nautobot-circuit-maintenance
+
+# --- Firewall Models ---
+# Model firewall rules, policies, and NAT in Nautobot
+nautobot-firewall-models
+
+# --- BGP Models ---
+# Model BGP peering, sessions, and routing policies
+nautobot-bgp-models
+
+# --- Design Builder ---
+# Programmatic network design and intent management
+nautobot-design-builder
+
+# --- Welcome Wizard ---
+# Guided onboarding workflow for new Nautobot instances
+# nautobot-welcome-wizard
