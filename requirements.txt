@@ -1,10 +1,13 @@
 # =============================================================================
-# Nautobot Apps (Plugins) — Nautobot 3.0 Compatible Versions
+# Nautobot Apps (Plugins) — Nautobot 3.x Compatible Versions
 # =============================================================================
-# IMPORTANT: Nautobot App major versions must match the Nautobot major version.
-# For Nautobot 3.0.x, use the 3.x release of each App (except ChatOps → 4.x).
-# Each line uses >= to set a minimum version; pip resolves the latest compatible
-# release within the same major line.
+# Each line uses >= (lower bound) and < (upper bound) to constrain pip to the
+# correct major version for Nautobot 3.x.  Without these bounds, pip backtracks
+# through many candidates, making builds slow or failing with
+# "resolution-too-deep".
+#
+# The Dockerfile also pins nautobot core via a constraints file to prevent
+# silent upgrades.
 #
 # To add an App:
 #   1. Uncomment or add the pip package below.
@@ -16,31 +19,31 @@
 # =============================================================================
 
 # --- Nornir Plugin for Nautobot (required by Golden Config) ---
-nautobot-plugin-nornir>=2.3.0
+nautobot-plugin-nornir>=2.3.0,<4.0.0
 
 # --- Nornir Nautobot (library, not a Nautobot App — no PLUGINS entry needed) ---
 #nornir-nautobot>=3.0.0,<4.0.0
 
 # --- Golden Config ---
-nautobot-golden-config>=3.0.3
+nautobot-golden-config>=3.0.3,<4.0.0
 
 # --- Single Source of Truth (SSoT) ---
-nautobot-ssot>=4.2.1
+nautobot-ssot>=4.2.1,<5.0.0
 
 # --- Device Lifecycle Management ---
-nautobot-device-lifecycle-mgmt>=4.1.0
+nautobot-device-lifecycle-mgmt>=4.1.0,<5.0.0
 
 # --- BGP Models ---
-nautobot-bgp-models>=3.1.0
+nautobot-bgp-models>=3.1.0,<4.0.0
 
 # --- Firewall Models ---
-nautobot-firewall-models>=3.0.0
+nautobot-firewall-models>=3.0.0,<4.0.0
 
 # --- Circuit Maintenance ---
-nautobot-circuit-maintenance>=3.1.0
+nautobot-circuit-maintenance>=3.1.0,<4.0.0
 
 # --- Design Builder ---
-nautobot-design-builder>=3.0.0
+nautobot-design-builder>=3.0.0,<4.0.0
 
 # --- ChatOps (version 4.x for Nautobot 3.0 — different from the others) ---
 #nautobot-chatops>=4.0.0,<5.0.0
