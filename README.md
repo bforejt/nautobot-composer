@@ -43,8 +43,8 @@ The setup script prints admin credentials to the console. **Save them — they a
 To re-run setup after deleting `.env`: `rm .env && ./setup.sh`
 
 Nautobot will be available at:
-- **HTTP:** `http://localhost:8080`
-- **HTTPS (self-signed):** `https://localhost:8443`
+- **HTTP:** `http://localhost`
+- **HTTPS (self-signed):** `https://localhost`
 
 ## Project Structure
 
