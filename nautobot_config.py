@@ -108,6 +108,7 @@ NAPALM_TIMEOUT = int(os.getenv("NAPALM_TIMEOUT", "30"))
 # App-specific configuration goes into PLUGINS_CONFIG.
 
 PLUGINS = [
+    "nautobot_plugin_nornir",
     "nautobot_device_lifecycle_mgmt",
     "nautobot_ssot",
     "nautobot_golden_config",
@@ -116,13 +117,19 @@ PLUGINS = [
     "nautobot_firewall_models",
     "nautobot_bgp_models",
     "nautobot_design_builder",
+    "nautobot_device_onboarding",
 ]
+
+# Data Validation Engine is built into Nautobot 3.0 core.
+# On 2.x it must be enabled as a separate app.
+import nautobot
+if nautobot.__version__.startswith("2."):
+    PLUGINS.append("nautobot_data_validation_engine")
 
 PLUGINS_CONFIG = {
     "nautobot_ssot": {
         "hide_example_jobs": True,
     },
-    
     "nautobot_golden_config": {
         "per_feature_bar_width": 0.3,
         "per_feature_width": 13,

@@ -45,5 +45,12 @@ nautobot-circuit-maintenance>=3.1.0,<4.0.0
 # --- Design Builder ---
 nautobot-design-builder>=3.0.0,<4.0.0
 
+# --- Device Onboarding ---
+nautobot-device-onboarding>=5.0.0,<6.0.0
+
+# --- Data Validation Engine ---
+# Included in Nautobot 3.0 core — no separate app needed.
+# For Nautobot 2.x, see requirements-2.x.txt.
+
 # --- ChatOps (version 4.x for Nautobot 3.0 — different from the others) ---
 #nautobot-chatops>=4.0.0,<5.0.0
