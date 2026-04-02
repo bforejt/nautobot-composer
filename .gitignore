@@ -25,5 +25,7 @@ Thumbs.db
 *~
 
 # Backups
+backups/
 *.sql
 *.sql.gz
+*.tar.gz
