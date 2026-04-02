@@ -355,11 +355,11 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# Set Nautobot version in Dockerfile
+# Set Nautobot version in Dockerfile and select requirements file
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "[4/6] Setting Nautobot version in Dockerfile..."
+echo "[4/6] Configuring Nautobot version..."
 
 DOCKERFILE="${SCRIPT_DIR}/Dockerfile"
 CURRENT_TAG="$(sed -n 's/^ARG NAUTOBOT_VERSION=//p' "$DOCKERFILE")"
@@ -369,7 +369,22 @@ if [[ "$CURRENT_TAG" == "$NAUTOBOT_IMAGE_TAG" ]]; then
 else
     sed -i.bak "s/^ARG NAUTOBOT_VERSION=.*/ARG NAUTOBOT_VERSION=${NAUTOBOT_IMAGE_TAG}/" "$DOCKERFILE"
     rm -f "${DOCKERFILE}.bak"
-    echo "  Updated: ${CURRENT_TAG} → ${NAUTOBOT_IMAGE_TAG}"
+    echo "  Dockerfile: ${CURRENT_TAG} → ${NAUTOBOT_IMAGE_TAG}"
+fi
+
+# Select the version-specific requirements file based on the major version.
+# requirements-2.x.txt and requirements-3.x.txt contain compatible App pins
+# for their respective Nautobot major versions.
+MAJOR_VERSION="${NAUTOBOT_VERSION%%.*}"
+REQUIREMENTS_SRC="${SCRIPT_DIR}/requirements-${MAJOR_VERSION}.x.txt"
+
+if [[ ! -f "$REQUIREMENTS_SRC" ]]; then
+    echo "  WARNING: No requirements file found for Nautobot ${MAJOR_VERSION}.x" >&2
+    echo "           Expected: ${REQUIREMENTS_SRC}" >&2
+    echo "           requirements.txt was not changed." >&2
+else
+    cp "$REQUIREMENTS_SRC" "${SCRIPT_DIR}/requirements.txt"
+    echo "  requirements.txt ← requirements-${MAJOR_VERSION}.x.txt"
 fi
 
 # ---------------------------------------------------------------------------

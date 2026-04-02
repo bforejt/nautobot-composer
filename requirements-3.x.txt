@@ -1,0 +1,46 @@
+# =============================================================================
+# Nautobot Apps (Plugins) — Nautobot 3.0 Compatible Versions
+# =============================================================================
+# IMPORTANT: Nautobot App major versions must match the Nautobot major version.
+# For Nautobot 3.0.x, use the 3.x release of each App (except ChatOps → 4.x).
+# Each line uses >= to set a minimum version; pip resolves the latest compatible
+# release within the same major line.
+#
+# To add an App:
+#   1. Uncomment or add the pip package below.
+#   2. Add the app's Python module name to PLUGINS in nautobot_config.py.
+#   3. Rebuild:  docker compose build --no-cache && docker compose up -d
+#
+# Recommendation: Enable ONE app at a time and verify Nautobot starts cleanly
+# before adding the next.
+# =============================================================================
+
+# --- Nornir Plugin for Nautobot (required by Golden Config) ---
+nautobot-plugin-nornir>=2.3.0
+
+# --- Nornir Nautobot (library, not a Nautobot App — no PLUGINS entry needed) ---
+#nornir-nautobot>=3.0.0,<4.0.0
+
+# --- Golden Config ---
+nautobot-golden-config>=3.0.3
+
+# --- Single Source of Truth (SSoT) ---
+nautobot-ssot>=4.2.1
+
+# --- Device Lifecycle Management ---
+nautobot-device-lifecycle-mgmt>=4.1.0
+
+# --- BGP Models ---
+nautobot-bgp-models>=3.1.0
+
+# --- Firewall Models ---
+nautobot-firewall-models>=3.0.0
+
+# --- Circuit Maintenance ---
+nautobot-circuit-maintenance>=3.1.0
+
+# --- Design Builder ---
+nautobot-design-builder>=3.0.0
+
+# --- ChatOps (version 4.x for Nautobot 3.0 — different from the others) ---
+#nautobot-chatops>=4.0.0,<5.0.0
