@@ -120,6 +120,12 @@ PLUGINS = [
     "nautobot_device_onboarding",
 ]
 
+# Data Validation Engine is built into Nautobot 3.0 core.
+# On 2.x it must be enabled as a separate app.
+import nautobot
+if nautobot.__version__.startswith("2."):
+    PLUGINS.append("nautobot_data_validation_engine")
+
 PLUGINS_CONFIG = {
     "nautobot_ssot": {
         "hide_example_jobs": True,
