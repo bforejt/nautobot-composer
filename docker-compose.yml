@@ -41,7 +41,10 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s
+      # First start runs migrations for all installed Apps, which can take
+      # several minutes.  A generous start_period prevents Docker from
+      # marking the container unhealthy during that window.
+      start_period: 600s
     restart: unless-stopped
 
   # --------------------------------------------------------------------------
@@ -63,7 +66,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s
+      start_period: 300s
     restart: unless-stopped
 
   # --------------------------------------------------------------------------
