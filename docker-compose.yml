@@ -40,11 +40,12 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health/"]
       interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 10
       # First start runs migrations for all installed Apps, which can take
-      # several minutes.  A generous start_period prevents Docker from
-      # marking the container unhealthy during that window.
-      start_period: 600s
+      # a long time depending on the number of Apps and host performance.
+      # start_period tells Docker not to count failures until this window
+      # passes; it has no effect on normally fast restarts.
+      start_period: 900s
     restart: unless-stopped
 
   # --------------------------------------------------------------------------
