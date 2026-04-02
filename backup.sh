@@ -81,7 +81,14 @@ fi
 
 mkdir -p "$BACKUP_DIR"
 
+# Get the running Nautobot version for the backup filename.
+if docker inspect --format '{{.State.Running}}' nautobot 2>/dev/null | grep -q true; then
+    NAUTOBOT_VER="$(docker exec nautobot nautobot-server version 2>/dev/null | tr -d '[:space:]')"
+fi
+NAUTOBOT_VER="${NAUTOBOT_VER:-unknown}"
+
 echo "Nautobot Backup"
+echo "  Version:   ${NAUTOBOT_VER}"
 echo "  Type:      ${BACKUP_TYPE}"
 echo "  Directory: ${BACKUP_DIR}"
 echo ""
@@ -90,7 +97,7 @@ echo ""
 # Database backup
 # ---------------------------------------------------------------------------
 if [[ "$BACKUP_TYPE" == "db" || "$BACKUP_TYPE" == "all" ]]; then
-    DB_FILE="${BACKUP_DIR}/nautobot_db_${TIMESTAMP}.sql.gz"
+    DB_FILE="${BACKUP_DIR}/nautobot_db_v${NAUTOBOT_VER}_${TIMESTAMP}.sql.gz"
     echo "Backing up database..."
     # Use docker exec (not docker compose exec) to avoid Compose status
     # messages contaminating the pg_dump output stream.
@@ -104,7 +111,7 @@ fi
 # Media backup
 # ---------------------------------------------------------------------------
 if [[ "$BACKUP_TYPE" == "media" || "$BACKUP_TYPE" == "all" ]]; then
-    MEDIA_FILE="nautobot_media_${TIMESTAMP}.tar.gz"
+    MEDIA_FILE="nautobot_media_v${NAUTOBOT_VER}_${TIMESTAMP}.tar.gz"
     echo "Backing up media files..."
     docker run --rm \
         -v "${MEDIA_VOLUME}:/data:ro" \
