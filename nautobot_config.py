@@ -117,6 +117,7 @@ PLUGINS = [
     "nautobot_firewall_models",
     "nautobot_bgp_models",
     "nautobot_design_builder",
+    "nautobot_device_onboarding",
 ]
 
 PLUGINS_CONFIG = {
