@@ -11,14 +11,20 @@ USER root
 #     libxslt-dev \
 #  && rm -rf /var/lib/apt/lists/*
 
+# Lock nautobot core to the version shipped in the base image.  Without this
+# constraint, pip may upgrade nautobot when installing Apps whose dependencies
+# pull in a newer major version (e.g. 3.x Apps installed into a 2.x image).
+RUN pip freeze | grep -i "^nautobot==" > /tmp/constraints.txt
+
 # Install Nautobot Apps and additional Python dependencies.
 # The requirements.txt file lists pip packages (one per line) to install
-# into the Nautobot container image.
+# into the Nautobot container image.  The constraints file above ensures
+# pip cannot silently upgrade nautobot core.
 COPY requirements.txt /tmp/requirements.txt
 RUN if grep -qvE '^\s*(#|$)' /tmp/requirements.txt; then \
-        pip install --no-cache-dir -r /tmp/requirements.txt; \
+        pip install --no-cache-dir -c /tmp/constraints.txt -r /tmp/requirements.txt; \
     fi && \
-    rm /tmp/requirements.txt
+    rm /tmp/requirements.txt /tmp/constraints.txt
 
 # Copy the Nautobot configuration file into the image.
 COPY nautobot_config.py /opt/nautobot/nautobot_config.py
