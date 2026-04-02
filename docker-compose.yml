@@ -129,12 +129,12 @@ services:
 
 volumes:
   nautobot_postgres_data:
-    driver: local
+    external: true
   nautobot_redis_data:
-    driver: local
+    external: true
   nautobot_media:
-    driver: local
+    external: true
   nautobot_git:
-    driver: local
+    external: true
   nautobot_jobs:
-    driver: local
+    external: true

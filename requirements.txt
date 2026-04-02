@@ -1,50 +1,46 @@
 # =============================================================================
-# Nautobot Apps (Plugins)
+# Nautobot Apps (Plugins) — Nautobot 3.0 Compatible Versions
 # =============================================================================
-# Add Nautobot Apps here, one per line. After adding an app, you must also:
-#   1. Add the app name to PLUGINS in nautobot_config.py
-#   2. Optionally configure it under PLUGINS_CONFIG in nautobot_config.py
-#   3. Rebuild: docker compose build --no-cache && docker compose up -d
+# IMPORTANT: Nautobot App major versions must match the Nautobot major version.
+# For Nautobot 3.0.x, use the 3.x release of each App (except ChatOps → 4.x).
 #
-# Pin versions for reproducible builds. Use ~= for compatible release pins.
+# Unpinned versions will pull 2.x releases that WILL crash on Nautobot 3.0.
+#
+# Workflow:
+#   1. Uncomment the apps you want below.
+#   2. Add the app's Python module name to PLUGINS in nautobot_config.py.
+#   3. Rebuild:  docker compose build --no-cache && docker compose up -d
+#
+# Recommendation: Enable ONE app at a time and verify Nautobot starts cleanly
+# before adding the next.
 # =============================================================================
 
-# --- Device Lifecycle Management ---
-# Tracks end-of-life, end-of-support, and software compliance
-nautobot-device-lifecycle-mgmt
+# --- Nornir Plugin for Nautobot (required by Golden Config) ---
+nautobot-plugin-nornir>=2.3.0
 
-# --- Single Source of Truth (SSoT) ---
-# Synchronize data between Nautobot and external systems
-nautobot-ssot
+# --- Nornir Nautobot (library, not a Nautobot App — no PLUGINS entry needed) ---
+#nornir-nautobot>=3.0.0,<4.0.0
 
 # --- Golden Config ---
-# Intended/actual config management, compliance, and remediation
-nautobot-golden-config
+nautobot-golden-config>=3.0.3
 
-# --- Nornir / Nornir Nautobot ---
-# Required by several automation-oriented apps
-nornir-nautobot
+# --- Single Source of Truth (SSoT) ---
+nautobot-ssot>=4.2.1
 
-# --- ChatOps ---
-# Slack/Teams/Webex integration for Nautobot operations
-nautobot-chatops
-
-# --- Circuit Maintenance ---
-# Parse and track provider maintenance notifications
-nautobot-circuit-maintenance
-
-# --- Firewall Models ---
-# Model firewall rules, policies, and NAT in Nautobot
-nautobot-firewall-models
+# --- Device Lifecycle Management ---
+nautobot-device-lifecycle-mgmt>=4.1.0
 
 # --- BGP Models ---
-# Model BGP peering, sessions, and routing policies
-nautobot-bgp-models
+nautobot-bgp-models>=3.1.0
+
+# --- Firewall Models ---
+nautobot-firewall-models>=3.0.0
+
+# --- Circuit Maintenance ---
+nautobot-circuit-maintenance>=3.1.0
 
 # --- Design Builder ---
-# Programmatic network design and intent management
-nautobot-design-builder
+nautobot-design-builder>=3.0.0
 
-# --- Welcome Wizard ---
-# Guided onboarding workflow for new Nautobot instances
-# nautobot-welcome-wizard
+# --- ChatOps (version 4.x for Nautobot 3.0 — different from the others) ---
+#nautobot-chatops>=4.0.0,<5.0.0

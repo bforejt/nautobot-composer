@@ -24,5 +24,20 @@ RUN if grep -qvE '^\s*(#|$)' /tmp/requirements.txt; then \
 COPY nautobot_config.py /opt/nautobot/nautobot_config.py
 RUN chown nautobot:nautobot /opt/nautobot/nautobot_config.py
 
+# Pre-create volume mount points with correct ownership.
+# When Docker mounts a named volume onto an empty directory, it copies the
+# directory's ownership and contents from the image into the volume.  By
+# creating these directories as nautobot:nautobot here, new named volumes
+# will inherit the right permissions automatically.
+RUN mkdir -p \
+        /opt/nautobot/media/devicetype-images \
+        /opt/nautobot/media/image-attachments \
+        /opt/nautobot/git \
+        /opt/nautobot/jobs \
+    && chown -R nautobot:nautobot \
+        /opt/nautobot/media \
+        /opt/nautobot/git \
+        /opt/nautobot/jobs
+
 # Drop back to the nautobot user for runtime.
 USER nautobot
