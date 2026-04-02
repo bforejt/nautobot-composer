@@ -52,7 +52,9 @@ Nautobot will be available at:
 nautobot-composer/
 ├── docker-compose.yml        # Service definitions (5 containers)
 ├── Dockerfile                # Custom Nautobot image with Apps
-├── requirements.txt          # Nautobot Apps (pip packages)
+├── requirements.txt          # Active Nautobot Apps (copied from version-specific file by setup.sh)
+├── requirements-3.x.txt      # App pins for Nautobot 3.x
+├── requirements-2.x.txt      # App pins for Nautobot 2.x
 ├── nautobot_config.py        # Nautobot application configuration
 ├── setup.sh                  # One-time initialization (secrets, volumes, permissions)
 ├── backup.sh                 # Back up database and/or media files
@@ -65,7 +67,9 @@ nautobot-composer/
 
 ## Included Apps
 
-The image ships with these Nautobot Apps enabled in `requirements.txt`:
+The project includes version-specific requirements files (`requirements-2.x.txt`, `requirements-3.x.txt`) with compatible App pins for each Nautobot major version. `setup.sh` copies the correct file to `requirements.txt` based on the `-v` flag.
+
+The default (3.x) image ships with these Nautobot Apps:
 
 | App | Package | Purpose |
 |-----|---------|---------|

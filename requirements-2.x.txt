@@ -1,0 +1,50 @@
+# =============================================================================
+# Nautobot Apps (Plugins) — Nautobot 2.x Compatible Versions
+# =============================================================================
+# For Nautobot 2.x, most Apps resolve to a compatible version without an
+# explicit pin.  Exceptions are noted below.
+#
+# To add an App:
+#   1. Uncomment or add the pip package below.
+#   2. Add the app's Python module name to PLUGINS in nautobot_config.py.
+#   3. Rebuild:  docker compose build --no-cache && docker compose up -d
+#
+# Recommendation: Enable ONE app at a time and verify Nautobot starts cleanly
+# before adding the next.
+# =============================================================================
+
+# --- Nornir Plugin for Nautobot (required by Golden Config) ---
+nautobot-plugin-nornir
+
+# --- Nornir Nautobot (library, not a Nautobot App — no PLUGINS entry needed) ---
+#nornir-nautobot
+
+# --- Golden Config ---
+nautobot-golden-config
+
+# --- Single Source of Truth (SSoT) ---
+nautobot-ssot
+
+# --- Device Lifecycle Management ---
+nautobot-device-lifecycle-mgmt
+
+# --- BGP Models ---
+nautobot-bgp-models
+
+# --- Firewall Models ---
+nautobot-firewall-models>=3.0.0
+
+# --- Circuit Maintenance ---
+nautobot-circuit-maintenance
+
+# --- Design Builder ---
+nautobot-design-builder
+
+# --- Device Onboarding ---
+nautobot-device-onboarding>=4.0.0
+
+# --- Data Validation Engine ---
+nautobot-data-validation-engine>=3.3.1
+
+# --- ChatOps ---
+#nautobot-chatops
