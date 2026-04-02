@@ -58,6 +58,10 @@ while [[ $# -gt 0 ]]; do
             echo "      --media-file FILE  Specific media backup file"
             echo "  -h, --help             Show this help message"
             echo ""
+            echo "Supported formats:"
+            echo "  Database: .sql.gz (gzipped) or .sql (plain)"
+            echo "  Media:    .tar.gz or .tgz"
+            echo ""
             echo "When no file is specified, the most recent matching backup in"
             echo "the backup directory is used automatically."
             exit 0
@@ -97,17 +101,23 @@ fi
 # ---------------------------------------------------------------------------
 # Resolve backup files
 # ---------------------------------------------------------------------------
-# find_latest <dir> <glob_pattern>
+# find_latest <dir> <pattern1> [<pattern2> ...]
+# Returns the most recently modified file matching any of the given globs.
 find_latest() {
-    local dir="$1" pattern="$2"
-    # ls -t sorts by modification time, newest first.
+    local dir="$1"; shift
+    local pattern
+    # Collect all matches, then sort by modification time.
     # shellcheck disable=SC2012
-    ls -t "${dir}"/${pattern} 2>/dev/null | head -1
+    for pattern in "$@"; do
+        ls -t "${dir}"/${pattern} 2>/dev/null
+    done | head -1
 }
 
 if [[ "$RESTORE_TYPE" == "db" || "$RESTORE_TYPE" == "all" ]]; then
     if [[ -z "$DB_FILE" ]]; then
-        DB_FILE="$(find_latest "$BACKUP_DIR" "nautobot_db_*.sql.gz")"
+        DB_FILE="$(find_latest "$BACKUP_DIR" \
+            "nautobot_db_*.sql.gz" "nautobot_db_*.sql" \
+            "nautobot-db-*.sql.gz" "nautobot-db-*.sql")"
         if [[ -z "$DB_FILE" ]]; then
             echo "ERROR: No database backup found in ${BACKUP_DIR}." >&2
             echo "  Use --db-file to specify a file, or run ./backup.sh first." >&2
@@ -122,7 +132,9 @@ fi
 
 if [[ "$RESTORE_TYPE" == "media" || "$RESTORE_TYPE" == "all" ]]; then
     if [[ -z "$MEDIA_FILE" ]]; then
-        MEDIA_FILE="$(find_latest "$BACKUP_DIR" "nautobot_media_*.tar.gz")"
+        MEDIA_FILE="$(find_latest "$BACKUP_DIR" \
+            "nautobot_media_*.tar.gz" "nautobot_media_*.tgz" \
+            "nautobot-media-*.tar.gz" "nautobot-media-*.tgz")"
         if [[ -z "$MEDIA_FILE" ]]; then
             echo "ERROR: No media backup found in ${BACKUP_DIR}." >&2
             echo "  Use --media-file to specify a file, or run ./backup.sh first." >&2
@@ -161,8 +173,12 @@ echo ""
 # ---------------------------------------------------------------------------
 if [[ "$RESTORE_TYPE" == "db" || "$RESTORE_TYPE" == "all" ]]; then
     echo "Restoring database from ${DB_FILE}..."
-    gunzip -c "$DB_FILE" \
-        | docker compose -f "${SCRIPT_DIR}/docker-compose.yml" exec -T db \
+    # Handle both gzipped (.sql.gz) and plain (.sql) backups.
+    if [[ "$DB_FILE" == *.gz ]]; then
+        gunzip -c "$DB_FILE"
+    else
+        cat "$DB_FILE"
+    fi | docker compose -f "${SCRIPT_DIR}/docker-compose.yml" exec -T db \
             psql -U nautobot -d nautobot --quiet --single-transaction
     echo "  Database restored."
 fi
