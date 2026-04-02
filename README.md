@@ -32,11 +32,10 @@ chmod +x setup.sh
 # Build the custom Nautobot image (installs Apps from requirements.txt)
 docker compose build
 
-# Start the stack
+# First start — run in foreground to watch database migrations
+docker compose up
+# Once all services are healthy, Ctrl+C and restart detached:
 docker compose up -d
-
-# Verify all services are healthy
-docker compose ps
 ```
 
 The setup script prints admin credentials to the console. **Save them — they are not stored elsewhere.**
