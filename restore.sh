@@ -184,7 +184,7 @@ if [[ "$RESTORE_TYPE" == "db" || "$RESTORE_TYPE" == "all" ]]; then
     else
         cat "$DB_FILE"
     fi | docker exec -i nautobot-db \
-            psql -U nautobot -d nautobot --quiet --single-transaction
+            psql -U nautobot -d nautobot --quiet
     echo "  Database restored."
 fi
 
