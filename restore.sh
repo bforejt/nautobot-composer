@@ -105,12 +105,15 @@ fi
 # Returns the most recently modified file matching any of the given globs.
 find_latest() {
     local dir="$1"; shift
-    local pattern
-    # Collect all matches, then sort by modification time.
+    local pattern result
+    # Collect all matches, then take the newest by modification time.
+    # The || true prevents SIGPIPE (exit 141) when head closes the pipe
+    # early, which would kill the script under set -o pipefail.
     # shellcheck disable=SC2012
-    for pattern in "$@"; do
-        ls -t "${dir}"/${pattern} 2>/dev/null
-    done | head -1
+    result="$(for pattern in "$@"; do
+        ls -t "${dir}"/${pattern} 2>/dev/null || true
+    done | head -1)" || true
+    echo "$result"
 }
 
 if [[ "$RESTORE_TYPE" == "db" || "$RESTORE_TYPE" == "all" ]]; then
