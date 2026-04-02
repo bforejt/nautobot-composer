@@ -176,9 +176,17 @@ echo ""
 # ---------------------------------------------------------------------------
 if [[ "$RESTORE_TYPE" == "db" || "$RESTORE_TYPE" == "all" ]]; then
     echo "Restoring database from ${DB_FILE}..."
+
+    # Drop and recreate the database to avoid conflicts (duplicate primary
+    # keys, existing tables, etc.) when restoring into a non-empty database.
+    echo "  Dropping and recreating nautobot database..."
+    docker exec nautobot-db \
+        psql -U nautobot -d postgres -c "DROP DATABASE IF EXISTS nautobot;"
+    docker exec nautobot-db \
+        psql -U nautobot -d postgres -c "CREATE DATABASE nautobot OWNER nautobot;"
+
     # Handle both gzipped (.sql.gz) and plain (.sql) backups.
-    # Use docker exec (not docker compose exec) to avoid Compose status
-    # messages like "Skipping..." being piped into psql as SQL.
+    echo "  Loading SQL dump..."
     if [[ "$DB_FILE" == *.gz ]]; then
         gunzip -c "$DB_FILE"
     else
