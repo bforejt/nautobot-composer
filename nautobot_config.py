@@ -111,17 +111,14 @@ PLUGINS = [
     "nautobot_device_lifecycle_mgmt",
     "nautobot_ssot",
     "nautobot_golden_config",
-    #"nautobot_chatops",
+    # "nautobot_chatops",
     "nautobot_circuit_maintenance",
     "nautobot_firewall_models",
     "nautobot_bgp_models",
     "nautobot_design_builder",
-    #"nautobot_welcome_wizard",
 ]
 
 PLUGINS_CONFIG = {
-    #Example configuration for an App:
-    
     "nautobot_ssot": {
         "hide_example_jobs": True,
     },

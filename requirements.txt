@@ -3,11 +3,11 @@
 # =============================================================================
 # IMPORTANT: Nautobot App major versions must match the Nautobot major version.
 # For Nautobot 3.0.x, use the 3.x release of each App (except ChatOps → 4.x).
+# Each line uses >= to set a minimum version; pip resolves the latest compatible
+# release within the same major line.
 #
-# Unpinned versions will pull 2.x releases that WILL crash on Nautobot 3.0.
-#
-# Workflow:
-#   1. Uncomment the apps you want below.
+# To add an App:
+#   1. Uncomment or add the pip package below.
 #   2. Add the app's Python module name to PLUGINS in nautobot_config.py.
 #   3. Rebuild:  docker compose build --no-cache && docker compose up -d
 #
