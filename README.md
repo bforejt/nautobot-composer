@@ -164,14 +164,40 @@ docker compose logs -f nautobot
 docker compose logs -f celery_worker
 ```
 
-### Upgrade Nautobot
+### Upgrade Nautobot (patch release)
 
-1. Update the `NAUTOBOT_VERSION` ARG in `Dockerfile` (or override at build time).
+For patch upgrades within the same major version (e.g. 3.0.8 → 3.0.10):
+
+1. Update the `NAUTOBOT_VERSION` ARG in `Dockerfile` (or re-run `./setup.sh -v 3.0`).
 2. Review [release notes](https://docs.nautobot.com/projects/core/en/stable/release-notes/) for breaking changes.
 3. Rebuild and restart:
    ```bash
    docker compose build --no-cache
-   docker compose up -d
+   docker compose up
+   ```
+
+### Upgrade Nautobot (major version, e.g. 2.x → 3.x)
+
+Major version upgrades require new App versions. This is a manual process — each upgrade is unique and should be reviewed carefully.
+
+1. **Back up everything first:**
+   ```bash
+   ./backup.sh
+   ```
+2. **Review the Nautobot [migration guide](https://docs.nautobot.com/projects/core/en/stable/user-guide/administration/upgrading/) and release notes** for breaking changes, required data migrations, and App compatibility.
+3. **Switch the requirements file** — copy the target version's requirements into place:
+   ```bash
+   cp requirements-3.x.txt requirements.txt
+   ```
+4. **Update the Dockerfile** — change the `ARG NAUTOBOT_VERSION` line on the first line to the new version tag (e.g. `3.0-py3.12`), or re-run setup:
+   ```bash
+   ./setup.sh -v 3.0
+   ```
+5. **Review `nautobot_config.py`** — update the `PLUGINS` and `PLUGINS_CONFIG` entries for any Apps that changed their module names or configuration format between major versions.
+6. **Rebuild and start in foreground** to watch for migration errors:
+   ```bash
+   docker compose build --no-cache
+   docker compose up
    ```
 
 ## Volumes
