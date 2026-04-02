@@ -2,21 +2,70 @@
 # =============================================================================
 # setup.sh — Initialize Nautobot Docker Compose environment
 #
-# 1. Generates a .env file with random secrets and sensible defaults.
-# 2. Creates named Docker volumes.
-# 3. Creates required subdirectories inside the media volume.
-# 4. Sets volume ownership to the nautobot user (UID 999, GID 999).
+# 1. Validates prerequisites (Docker, Compose V2, curl, openssl).
+# 2. Generates a .env file with random secrets and sensible defaults.
+# 3. Sets the Nautobot version in the Dockerfile (validated against Docker Hub).
+# 4. Creates named Docker volumes.
+# 5. Creates required subdirectories inside the media volume.
+# 6. Sets volume ownership to the nautobot user (UID 999, GID 999).
 #
 # Uses a temporary Alpine container for all volume filesystem operations,
 # so this works identically on Linux and macOS without sudo.
 #
 # Usage:
-#   ./setup.sh            Normal run
-#   ./setup.sh --debug    Enable bash trace (set -x) for troubleshooting
+#   ./setup.sh                        Latest Nautobot 3.0 on Python 3.12
+#   ./setup.sh -v 2.4                 Nautobot 2.4 on Python 3.12
+#   ./setup.sh -v 3.0 -p 3.11        Nautobot 3.0 on Python 3.11
+#   ./setup.sh --debug                Enable bash trace (set -x)
 # =============================================================================
 
-# Enable trace mode if --debug is passed.
-if [[ "${1:-}" == "--debug" ]]; then
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+NAUTOBOT_VERSION="3.0"
+PYTHON_VERSION="3.12"
+DEBUG_MODE=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -v|--version)
+            NAUTOBOT_VERSION="$2"
+            shift 2
+            ;;
+        -p|--python)
+            PYTHON_VERSION="$2"
+            shift 2
+            ;;
+        --debug)
+            DEBUG_MODE=true
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: ./setup.sh [-v VERSION] [-p PYTHON] [--debug]"
+            echo ""
+            echo "Options:"
+            echo "  -v, --version VERSION   Nautobot version (default: 3.0)"
+            echo "  -p, --python  PYTHON    Python version suffix (default: 3.12)"
+            echo "      --debug             Enable bash trace for troubleshooting"
+            echo "  -h, --help              Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  ./setup.sh                     # 3.0-py3.12 (default)"
+            echo "  ./setup.sh -v 2.4              # 2.4-py3.12"
+            echo "  ./setup.sh -v 3.0 -p 3.11      # 3.0-py3.11"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            echo "Run './setup.sh --help' for usage." >&2
+            exit 1
+            ;;
+    esac
+done
+
+NAUTOBOT_IMAGE_TAG="${NAUTOBOT_VERSION}-py${PYTHON_VERSION}"
+
+if [[ "$DEBUG_MODE" == true ]]; then
     set -x
     echo "DEBUG: Trace mode enabled."
 fi
@@ -30,7 +79,7 @@ trap 'echo "ERROR: Script failed at line $LINENO.  Exit code: $?" >&2' ERR
 # Configuration
 # ---------------------------------------------------------------------------
 
-echo "[1/5] Loading configuration..."
+echo "[1/6] Loading configuration..."
 
 NAUTOBOT_UID=999
 NAUTOBOT_GID=999
@@ -69,6 +118,7 @@ MEDIA_SUBDIRS=(
 echo "  Project name:  $PROJECT_NAME"
 echo "  Script dir:    $SCRIPT_DIR"
 echo "  .env file:     $ENV_FILE"
+echo "  Image tag:     networktocode/nautobot:${NAUTOBOT_IMAGE_TAG}"
 
 # ---------------------------------------------------------------------------
 # Helper: generate random strings
@@ -103,32 +153,112 @@ generate_api_token() {
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "[2/5] Preflight checks..."
+echo "[2/6] Preflight checks..."
 
+# --- Docker CLI ---
 if ! command -v docker &>/dev/null; then
     echo "  FAIL: docker is not installed or not in PATH." >&2
+    echo "" >&2
+    echo "  Install Docker from https://docs.docker.com/get-docker/" >&2
+    echo "    macOS/Windows: Install Docker Desktop." >&2
+    echo "    Linux:         Follow the Docker Engine install guide for your distro." >&2
     exit 1
 fi
 echo "  docker:   $(docker --version)"
 
+# --- Verify this is Docker from docker.com (not a snap or distro repackage) ---
+# Snap Docker and distro packages often lag behind, lack Compose V2, and can
+# behave differently with volumes and permissions.
+DOCKER_SERVER_VERSION="$(docker version --format '{{.Server.Platform.Name}}' 2>/dev/null || true)"
+if [[ -n "$DOCKER_SERVER_VERSION" ]]; then
+    echo "  engine:   $DOCKER_SERVER_VERSION"
+else
+    # Older Docker versions don't expose Platform.Name — fall back to a
+    # best-effort snap check on Linux.
+    if command -v snap &>/dev/null && snap list docker &>/dev/null 2>&1; then
+        echo "  WARNING: Docker appears to be installed via snap." >&2
+        echo "           The snap package is not officially supported and may cause" >&2
+        echo "           issues with volume permissions and Compose V2." >&2
+        echo "           Recommended: remove the snap and install Docker Engine from" >&2
+        echo "           https://docs.docker.com/engine/install/" >&2
+    fi
+fi
+
+# --- Docker daemon connectivity ---
 if ! docker info &>/dev/null; then
-    echo "  FAIL: Docker daemon is not running or current user cannot access it." >&2
+    echo "  FAIL: Cannot connect to the Docker daemon." >&2
+    echo "" >&2
+    case "$(uname -s)" in
+        Linux)
+            echo "  Possible fixes:" >&2
+            echo "    1. Start the daemon:    sudo systemctl start docker" >&2
+            echo "    2. Add yourself to the docker group (avoids sudo):" >&2
+            echo "         sudo usermod -aG docker \$USER" >&2
+            echo "         newgrp docker   # apply immediately, or log out and back in" >&2
+            ;;
+        Darwin)
+            echo "  Possible fixes:" >&2
+            echo "    1. Open Docker Desktop from /Applications and wait for it to start." >&2
+            echo "    2. Or start it from the CLI:  open -a Docker" >&2
+            ;;
+        MINGW*|MSYS*|CYGWIN*)
+            echo "  Possible fixes:" >&2
+            echo "    1. Start Docker Desktop from the Start menu." >&2
+            echo "    2. In Docker Desktop settings, enable WSL integration for your distro." >&2
+            ;;
+        *)
+            echo "  Ensure the Docker daemon is running and your user has access." >&2
+            ;;
+    esac
     exit 1
 fi
 echo "  daemon:   running"
 
+# --- Docker Compose V2 ---
+# This project uses `docker compose` (V2 plugin), not the deprecated
+# standalone `docker-compose` (V1 Python package).
+if ! docker compose version &>/dev/null; then
+    echo "  FAIL: 'docker compose' (Compose V2) is not available." >&2
+    echo "" >&2
+    echo "  Docker Compose V2 is included with Docker Desktop and can be added" >&2
+    echo "  to Docker Engine via the docker-compose-plugin package." >&2
+    echo "  See: https://docs.docker.com/compose/install/" >&2
+    exit 1
+fi
+echo "  compose:  $(docker compose version --short)"
+
+# --- curl ---
+if ! command -v curl &>/dev/null; then
+    echo "  FAIL: curl is required but not found in PATH." >&2
+    exit 1
+fi
+echo "  curl:     $(curl --version | head -1)"
+
+# --- openssl ---
 if ! command -v openssl &>/dev/null; then
     echo "  FAIL: openssl is required but not found in PATH." >&2
     exit 1
 fi
 echo "  openssl:  $(openssl version)"
 
+# --- Validate the Nautobot image tag exists on Docker Hub ---
+DOCKER_HUB_URL="https://hub.docker.com/v2/repositories/networktocode/nautobot/tags/${NAUTOBOT_IMAGE_TAG}"
+HTTP_STATUS="$(curl -s -o /dev/null -w "%{http_code}" "$DOCKER_HUB_URL")"
+if [[ "$HTTP_STATUS" != "200" ]]; then
+    echo "  FAIL: Image tag 'networktocode/nautobot:${NAUTOBOT_IMAGE_TAG}' not found on Docker Hub." >&2
+    echo "" >&2
+    echo "  Check available tags at:" >&2
+    echo "    https://hub.docker.com/r/networktocode/nautobot/tags" >&2
+    exit 1
+fi
+echo "  image:    networktocode/nautobot:${NAUTOBOT_IMAGE_TAG} (verified on Docker Hub)"
+
 # ---------------------------------------------------------------------------
 # Generate .env file
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "[3/5] Environment file..."
+echo "[3/6] Environment file..."
 
 if [[ -f "$ENV_FILE" ]]; then
     echo "  .env already exists — skipping generation."
@@ -225,11 +355,29 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
+# Set Nautobot version in Dockerfile
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "[4/6] Setting Nautobot version in Dockerfile..."
+
+DOCKERFILE="${SCRIPT_DIR}/Dockerfile"
+CURRENT_TAG="$(sed -n 's/^ARG NAUTOBOT_VERSION=//p' "$DOCKERFILE")"
+
+if [[ "$CURRENT_TAG" == "$NAUTOBOT_IMAGE_TAG" ]]; then
+    echo "  Dockerfile already set to ${NAUTOBOT_IMAGE_TAG} — no change."
+else
+    sed -i.bak "s/^ARG NAUTOBOT_VERSION=.*/ARG NAUTOBOT_VERSION=${NAUTOBOT_IMAGE_TAG}/" "$DOCKERFILE"
+    rm -f "${DOCKERFILE}.bak"
+    echo "  Updated: ${CURRENT_TAG} → ${NAUTOBOT_IMAGE_TAG}"
+fi
+
+# ---------------------------------------------------------------------------
 # Create volumes
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "[4/5] Creating Docker volumes..."
+echo "[5/6] Creating Docker volumes..."
 
 for vol in "${ALL_VOLUMES[@]}"; do
     if docker volume inspect "$vol" &>/dev/null; then
@@ -245,7 +393,7 @@ done
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "[5/5] Initializing Nautobot volumes (mkdir + chown ${NAUTOBOT_UID}:${NAUTOBOT_GID})..."
+echo "[6/6] Initializing Nautobot volumes (mkdir + chown ${NAUTOBOT_UID}:${NAUTOBOT_GID})..."
 
 MKDIR_ARGS=""
 for subdir in "${MEDIA_SUBDIRS[@]}"; do
