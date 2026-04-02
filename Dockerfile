@@ -14,7 +14,10 @@ USER root
 # Lock nautobot core to the version shipped in the base image.  Without this
 # constraint, pip may upgrade nautobot when installing Apps whose dependencies
 # pull in a newer major version (e.g. 3.x Apps installed into a 2.x image).
-RUN pip freeze | grep -i "^nautobot==" > /tmp/constraints.txt
+# NOTE: The base image installs nautobot from a local wheel, so pip freeze
+# shows "nautobot @ file://..." instead of "nautobot==x.y.z".  We use
+# pip show to get the clean version number.
+RUN echo "nautobot==$(pip show nautobot | sed -n 's/^Version: //p')" > /tmp/constraints.txt
 
 # Install Nautobot Apps and additional Python dependencies.
 # The requirements.txt file lists pip packages (one per line) to install
