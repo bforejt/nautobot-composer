@@ -183,8 +183,7 @@ if [[ "$RESTORE_TYPE" == "db" || "$RESTORE_TYPE" == "all" ]]; then
         gunzip -c "$DB_FILE"
     else
         cat "$DB_FILE"
-    fi | docker exec -i nautobot-db \
-            psql -U nautobot -d nautobot --quiet
+    fi | docker exec -i nautobot-db psql -U nautobot
     echo "  Database restored."
 fi
 
