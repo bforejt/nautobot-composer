@@ -91,7 +91,7 @@ if ! docker info &>/dev/null; then
 fi
 
 if [[ "$RESTORE_TYPE" == "db" || "$RESTORE_TYPE" == "all" ]]; then
-    if ! docker compose -f "${SCRIPT_DIR}/docker-compose.yml" ps db --status running --format '{{.Name}}' 2>/dev/null | grep -q .; then
+    if ! docker inspect --format '{{.State.Running}}' nautobot-db 2>/dev/null | grep -q true; then
         echo "ERROR: The db container is not running. Start the stack first:" >&2
         echo "  docker compose up -d" >&2
         exit 1
@@ -177,11 +177,13 @@ echo ""
 if [[ "$RESTORE_TYPE" == "db" || "$RESTORE_TYPE" == "all" ]]; then
     echo "Restoring database from ${DB_FILE}..."
     # Handle both gzipped (.sql.gz) and plain (.sql) backups.
+    # Use docker exec (not docker compose exec) to avoid Compose status
+    # messages like "Skipping..." being piped into psql as SQL.
     if [[ "$DB_FILE" == *.gz ]]; then
         gunzip -c "$DB_FILE"
     else
         cat "$DB_FILE"
-    fi | docker compose -f "${SCRIPT_DIR}/docker-compose.yml" exec -T db \
+    fi | docker exec -i nautobot-db \
             psql -U nautobot -d nautobot --quiet --single-transaction
     echo "  Database restored."
 fi

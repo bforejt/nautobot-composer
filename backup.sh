@@ -72,7 +72,7 @@ if ! docker info &>/dev/null; then
 fi
 
 if [[ "$BACKUP_TYPE" == "db" || "$BACKUP_TYPE" == "all" ]]; then
-    if ! docker compose -f "${SCRIPT_DIR}/docker-compose.yml" ps db --status running --format '{{.Name}}' 2>/dev/null | grep -q .; then
+    if ! docker inspect --format '{{.State.Running}}' nautobot-db 2>/dev/null | grep -q true; then
         echo "ERROR: The db container is not running. Start the stack first:" >&2
         echo "  docker compose up -d" >&2
         exit 1
@@ -92,7 +92,9 @@ echo ""
 if [[ "$BACKUP_TYPE" == "db" || "$BACKUP_TYPE" == "all" ]]; then
     DB_FILE="${BACKUP_DIR}/nautobot_db_${TIMESTAMP}.sql.gz"
     echo "Backing up database..."
-    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" exec -T db \
+    # Use docker exec (not docker compose exec) to avoid Compose status
+    # messages contaminating the pg_dump output stream.
+    docker exec nautobot-db \
         pg_dump -U nautobot nautobot | gzip > "$DB_FILE"
     DB_SIZE="$(du -h "$DB_FILE" | cut -f1)"
     echo "  Created: ${DB_FILE} (${DB_SIZE})"
