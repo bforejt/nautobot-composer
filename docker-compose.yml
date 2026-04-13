@@ -150,7 +150,6 @@ services:
         external_url 'http://localhost:8080'
         # Reduce resource usage for lab/small deployments.
         prometheus_monitoring['enable'] = false
-        grafana['enable'] = false
         alertmanager['enable'] = false
     volumes:
       - gitlab_config:/etc/gitlab
