@@ -11,6 +11,7 @@ Production-ready Docker Compose deployment for [Nautobot 3.0](https://docs.nauto
 | **Celery Beat** | Same custom image | Scheduled task orchestration |
 | **PostgreSQL 16** | `postgres:16-alpine` | Primary relational database |
 | **Redis 7** | `redis:7-alpine` | Caching, Celery broker, and lock backend |
+| **GitLab CE** | `gitlab/gitlab-ce:latest` | Git repository server for config backups (opt-in) |
 
 ## Prerequisites
 
@@ -209,6 +210,32 @@ Major version upgrades require new App versions. This is a manual process — ea
 | `nautobot_media` | `/opt/nautobot/media` | Uploaded files (images, attachments) |
 | `nautobot_git` | `/opt/nautobot/git` | Git repository clones |
 | `nautobot_jobs` | `/opt/nautobot/jobs` | Custom job files |
+| `gitlab_config` | `/etc/gitlab` | GitLab configuration (opt-in) |
+| `gitlab_logs` | `/var/log/gitlab` | GitLab logs (opt-in) |
+| `gitlab_data` | `/var/opt/gitlab` | GitLab repositories and data (opt-in) |
+
+## GitLab (Optional)
+
+A GitLab CE instance is included for storing configuration backups (e.g., Golden Config backup repos). It uses a [Compose profile](https://docs.docker.com/compose/how-tos/profiles/) and does not start by default.
+
+```bash
+# Start the full stack including GitLab
+docker compose --profile gitlab up
+
+# Or start GitLab alongside an already-running stack
+docker compose --profile gitlab up -d gitlab
+```
+
+GitLab is available at:
+- **HTTP:** `http://localhost:8080`
+- **HTTPS:** `https://localhost:8443`
+- **SSH:** `ssh://git@localhost:2222`
+
+The first boot takes several minutes while GitLab runs its internal configuration and database migrations. The root password is auto-generated — retrieve it with:
+
+```bash
+docker exec nautobot-gitlab grep 'Password:' /etc/gitlab/initial_root_password
+```
 
 ## Production Considerations
 

@@ -99,6 +99,9 @@ GIT_VOLUME="nautobot_git"
 JOBS_VOLUME="nautobot_jobs"
 POSTGRES_VOLUME="nautobot_postgres_data"
 REDIS_VOLUME="nautobot_redis_data"
+GITLAB_CONFIG_VOLUME="gitlab_config"
+GITLAB_LOGS_VOLUME="gitlab_logs"
+GITLAB_DATA_VOLUME="gitlab_data"
 
 ALL_VOLUMES=(
     "$MEDIA_VOLUME"
@@ -106,6 +109,9 @@ ALL_VOLUMES=(
     "$JOBS_VOLUME"
     "$POSTGRES_VOLUME"
     "$REDIS_VOLUME"
+    "$GITLAB_CONFIG_VOLUME"
+    "$GITLAB_LOGS_VOLUME"
+    "$GITLAB_DATA_VOLUME"
 )
 
 # Subdirectories Nautobot expects inside the media volume.
