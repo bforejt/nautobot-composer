@@ -148,6 +148,12 @@ services:
     environment:
       GITLAB_OMNIBUS_CONFIG: |
         external_url 'http://localhost:8080'
+        # Keep nginx listening on port 80 inside the container; Docker
+        # maps host 8080 → container 80.  Without this, GitLab parses
+        # the port from external_url and tries to bind nginx to 8080
+        # internally, conflicting with Puma.
+        nginx['listen_port'] = 80
+        nginx['listen_https'] = false
         # Reduce resource usage for lab/small deployments.
         prometheus_monitoring['enable'] = false
         alertmanager['enable'] = false
