@@ -131,6 +131,39 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # --------------------------------------------------------------------------
+  # GitLab CE — Git Repository Server (opt-in)
+  # --------------------------------------------------------------------------
+  # Start with:  docker compose --profile gitlab up
+  # First boot takes several minutes while GitLab runs internal configuration.
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    container_name: nautobot-gitlab
+    profiles:
+      - gitlab
+    ports:
+      - "8080:80"
+      - "8443:443"
+      - "2222:22"
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://localhost:8080'
+        # Reduce resource usage for lab/small deployments.
+        prometheus_monitoring['enable'] = false
+        grafana['enable'] = false
+        alertmanager['enable'] = false
+    volumes:
+      - gitlab_config:/etc/gitlab
+      - gitlab_logs:/var/log/gitlab
+      - gitlab_data:/var/opt/gitlab
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/-/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 900s
+    restart: unless-stopped
+
 volumes:
   nautobot_postgres_data:
     external: true
@@ -141,4 +174,10 @@ volumes:
   nautobot_git:
     external: true
   nautobot_jobs:
+    external: true
+  gitlab_config:
+    external: true
+  gitlab_logs:
+    external: true
+  gitlab_data:
     external: true
