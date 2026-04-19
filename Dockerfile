@@ -1,4 +1,4 @@
-ARG NAUTOBOT_VERSION=3.0-py3.12
+ARG NAUTOBOT_VERSION=3.1-py3.12
 FROM networktocode/nautobot:${NAUTOBOT_VERSION}
 
 # Switch to root for package installation and file operations.

@@ -1,12 +1,12 @@
 # Nautobot Docker Compose — Network Source of Truth
 
-Production-ready Docker Compose deployment for [Nautobot 3.0](https://docs.nautobot.com/projects/core/en/stable/), the open-source Network Source of Truth and Automation Platform.
+Production-ready Docker Compose deployment for [Nautobot 3.x](https://docs.nautobot.com/projects/core/en/stable/), the open-source Network Source of Truth and Automation Platform. Supports Nautobot 3.0, 3.1, and 2.x via the `setup.sh -v` flag.
 
 ## Stack Components
 
 | Component | Image | Purpose |
 |-----------|-------|---------|
-| **Nautobot** | Custom (based on `networktocode/nautobot:3.0-py3.12`) | Web UI, REST/GraphQL API, application server |
+| **Nautobot** | Custom (based on `networktocode/nautobot:3.1-py3.12`) | Web UI, REST/GraphQL API, application server |
 | **Celery Worker** | Same custom image | Background task execution (jobs, webhooks, Git sync) |
 | **Celery Beat** | Same custom image | Scheduled task orchestration |
 | **PostgreSQL 16** | `postgres:16-alpine` | Primary relational database |
