@@ -13,16 +13,17 @@
 # so this works identically on Linux and macOS without sudo.
 #
 # Usage:
-#   ./setup.sh                        Latest Nautobot 3.0 on Python 3.12
+#   ./setup.sh                        Latest Nautobot 3.1 on Python 3.12
+#   ./setup.sh -v 3.0                 Nautobot 3.0 on Python 3.12
 #   ./setup.sh -v 2.4                 Nautobot 2.4 on Python 3.12
-#   ./setup.sh -v 3.0 -p 3.11        Nautobot 3.0 on Python 3.11
+#   ./setup.sh -v 3.1 -p 3.11        Nautobot 3.1 on Python 3.11
 #   ./setup.sh --debug                Enable bash trace (set -x)
 # =============================================================================
 
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
-NAUTOBOT_VERSION="3.0"
+NAUTOBOT_VERSION="3.1"
 PYTHON_VERSION="3.12"
 DEBUG_MODE=false
 
@@ -44,15 +45,16 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: ./setup.sh [-v VERSION] [-p PYTHON] [--debug]"
             echo ""
             echo "Options:"
-            echo "  -v, --version VERSION   Nautobot version (default: 3.0)"
+            echo "  -v, --version VERSION   Nautobot version (default: 3.1)"
             echo "  -p, --python  PYTHON    Python version suffix (default: 3.12)"
             echo "      --debug             Enable bash trace for troubleshooting"
             echo "  -h, --help              Show this help message"
             echo ""
             echo "Examples:"
-            echo "  ./setup.sh                     # 3.0-py3.12 (default)"
+            echo "  ./setup.sh                     # 3.1-py3.12 (default)"
+            echo "  ./setup.sh -v 3.0              # 3.0-py3.12"
             echo "  ./setup.sh -v 2.4              # 2.4-py3.12"
-            echo "  ./setup.sh -v 3.0 -p 3.11      # 3.0-py3.11"
+            echo "  ./setup.sh -v 3.1 -p 3.11      # 3.1-py3.11"
             exit 0
             ;;
         *)
