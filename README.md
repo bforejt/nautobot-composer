@@ -218,6 +218,39 @@ Major version upgrades require new App versions. This is a manual process — ea
    docker compose up
    ```
 
+### Upgrade PostgreSQL (major version)
+
+> ⚠️ **This only applies when pulling a commit that bumps the Postgres major version** (e.g. 16 → 17) into a stack that was *originally deployed from this project*. PostgreSQL data volumes are **not** compatible across major versions — starting a newer Postgres container against an older data directory will fail to start.
+>
+> This project is not intended as an upgrade path for arbitrary existing Nautobot deployments; it's a seed for new deployments or for stacks that were built from this project in the first place.
+
+If you're pulling a Postgres major-version bump and have existing data:
+
+1. **Dump the database while the old Postgres is still running:**
+   ```bash
+   ./backup.sh -t db
+   ```
+2. **Stop the stack and wipe the Postgres volume:**
+   ```bash
+   docker compose down
+   docker volume rm nautobot_postgres_data
+   docker volume create nautobot_postgres_data
+   ```
+3. **Start only the new Postgres container** so it can initialize the data directory with the new version:
+   ```bash
+   docker compose up -d db
+   ```
+4. **Restore the dump:**
+   ```bash
+   ./restore.sh -t db
+   ```
+5. **Start the rest of the stack:**
+   ```bash
+   docker compose up -d
+   ```
+
+Fresh installations via `./setup.sh` on a new host are unaffected — they just get the current Postgres version from the start.
+
 ## Volumes
 
 | Volume | Mount | Purpose |
