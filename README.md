@@ -10,7 +10,7 @@ Production-ready Docker Compose deployment for [Nautobot 3.x](https://docs.nauto
 | **Celery Worker** | Same custom image | Background task execution (jobs, webhooks, Git sync) |
 | **Celery Beat** | Same custom image | Scheduled task orchestration |
 | **PostgreSQL 17** | `postgres:17-alpine` | Primary relational database |
-| **Redis 7** | `redis:7-alpine` | Caching, Celery broker, and lock backend |
+| **Valkey 8** | `valkey/valkey:8-alpine` | Caching, Celery broker, and lock backend (BSD-licensed Redis fork) |
 | **GitLab CE** | `gitlab/gitlab-ce:latest` | Git repository server for config backups (opt-in) |
 
 ## Prerequisites
@@ -117,7 +117,7 @@ All sensitive and deployment-specific values live in `.env`. See `env.example` f
 | `POSTGRES_PASSWORD` | PostgreSQL password |
 | `NAUTOBOT_SUPERUSER_*` | Initial admin account credentials |
 | `NAPALM_USERNAME` / `NAPALM_PASSWORD` / `NAPALM_TIMEOUT` | Device credentials for Apps that use NAPALM (Golden Config, Device Onboarding, etc.) |
-| `REDIS_MAXMEMORY` | Redis memory cap (default: `512mb`) |
+| `REDIS_MAXMEMORY` | Valkey/Redis memory cap (default: `512mb`) |
 
 ### NAPALM device credentials
 
@@ -283,7 +283,7 @@ Fresh installations via `./setup.sh` on a new host are unaffected — they just 
 | Volume | Mount | Purpose |
 |--------|-------|---------|
 | `nautobot_postgres_data` | `/var/lib/postgresql/data` | Persistent database storage |
-| `nautobot_redis_data` | `/data` | Redis persistence (optional, for cache durability) |
+| `nautobot_redis_data` | `/data` | Valkey persistence (optional, for cache durability) |
 | `nautobot_media` | `/opt/nautobot/media` | Uploaded files (images, attachments) |
 | `nautobot_git` | `/opt/nautobot/git` | Git repository clones |
 | `./jobs` (bind mount) | `/opt/nautobot/jobs` | Custom Nautobot Jobs — see [Custom Jobs](#custom-jobs) |
@@ -335,7 +335,7 @@ docker exec nautobot-gitlab grep 'Password:' /etc/gitlab/initial_root_password
 - Use strong, unique passwords for PostgreSQL and the superuser account.
 - Place a reverse proxy (nginx, Caddy, Traefik) in front for TLS termination and rate limiting.
 - Back up PostgreSQL regularly — see [Backup & Restore](#backup--restore).
-- Consider external Redis (ElastiCache, etc.) for HA deployments.
+- Consider an external managed Valkey/Redis service (Amazon MemoryDB/ElastiCache, Google Memorystore for Valkey, etc.) for HA deployments.
 - **Set resource limits.** The defaults intentionally have no memory or CPU caps so lab environments can use whatever the host has available. For production, add `deploy.resources.limits` to each service in `docker-compose.yml` (or a `docker-compose.override.yml`) to prevent a runaway job from OOMing the host. A reasonable starting point:
 
    ```yaml
