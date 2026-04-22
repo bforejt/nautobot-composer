@@ -1,5 +1,7 @@
 ---
-# Nautobot 3.0 — Docker Compose
+# Nautobot — Docker Compose
+# Supports Nautobot 2.4, 3.0, and 3.1 — select the version via ./setup.sh -v
+# (or by editing NAUTOBOT_VERSION in the Dockerfile).
 # Docs: https://docs.nautobot.com/projects/core/en/stable/user-guide/administration/guides/docker/
 
 x-nautobot-build: &nautobot-build
@@ -26,8 +28,11 @@ x-nautobot-volumes: &nautobot-volumes
     # be added to the project and version-controlled alongside the rest
     # of the deployment.  See ./jobs/README.md for details.
     - ./jobs:/opt/nautobot/jobs
-    # Bind-mount the config for live editing without rebuilds:
-    # - ./nautobot_config.py:/opt/nautobot/nautobot_config.py:ro
+    # Bind-mount the config so edits only need a restart (not a rebuild).
+    # The Dockerfile also COPYs this file so the image stays self-contained
+    # if this line is removed (e.g. for shipping a standalone production
+    # image).  Read-only: Nautobot never writes to its config file.
+    - ./nautobot_config.py:/opt/nautobot/nautobot_config.py:ro
 
 services:
   # --------------------------------------------------------------------------
@@ -97,6 +102,8 @@ services:
 
   # --------------------------------------------------------------------------
   # PostgreSQL 16 — Primary Database
+  # Required minimums: Nautobot 2.4 → 12+, Nautobot 3.0 → 14+, Nautobot 3.1 → 14+
+  # PostgreSQL 16 is compatible with all supported Nautobot versions.
   # --------------------------------------------------------------------------
   db:
     image: postgres:16-alpine

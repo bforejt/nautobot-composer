@@ -119,9 +119,25 @@ All sensitive and deployment-specific values live in `.env`. See `env.example` f
 
 ### nautobot_config.py
 
-This file is copied into the image at build time (`COPY` in Dockerfile). It imports all defaults from `nautobot.core.settings` and overrides only what's needed. Most runtime settings are pulled from environment variables, keeping the config file portable across environments.
+This file is **bind-mounted** into the Nautobot, Celery worker, and Celery beat containers at `/opt/nautobot/nautobot_config.py`, so edits only require a service restart — not a full rebuild:
 
-> **Tip:** For live editing without rebuilds, uncomment the bind-mount line in `docker-compose.yml` under `x-nautobot-volumes`.
+```bash
+# After editing nautobot_config.py
+docker compose restart nautobot celery_worker celery_beat
+```
+
+It imports all defaults from `nautobot.core.settings` and overrides only what's needed. Most runtime settings are pulled from environment variables, keeping the config file portable across environments.
+
+The file is also `COPY`ed into the image by the Dockerfile as a fallback, so removing the bind mount (e.g. for a self-contained production image) still leaves a working config in place.
+
+**What triggers a rebuild vs. a restart:**
+
+| Change | Action |
+|--------|--------|
+| `nautobot_config.py` | `docker compose restart` |
+| Files in `./jobs/` | `docker compose restart` |
+| `.env` | `docker compose up -d` (recreates containers with new env) |
+| `requirements.txt` / `Dockerfile` / `NAUTOBOT_VERSION` | `docker compose build && docker compose up -d` |
 
 ## Operations
 
