@@ -22,7 +22,10 @@ x-nautobot-volumes: &nautobot-volumes
   volumes:
     - nautobot_media:/opt/nautobot/media
     - nautobot_git:/opt/nautobot/git
-    - nautobot_jobs:/opt/nautobot/jobs
+    # Bind-mount ./jobs into the container's JOBS_ROOT so custom Jobs can
+    # be added to the project and version-controlled alongside the rest
+    # of the deployment.  See ./jobs/README.md for details.
+    - ./jobs:/opt/nautobot/jobs
     # Bind-mount the config for live editing without rebuilds:
     # - ./nautobot_config.py:/opt/nautobot/nautobot_config.py:ro
 
@@ -178,8 +181,7 @@ volumes:
     external: true
   nautobot_git:
     external: true
-  nautobot_jobs:
-    external: true
+  # nautobot_jobs: replaced by a bind mount to ./jobs (see x-nautobot-volumes)
   gitlab_config:
     external: true
   gitlab_logs:

@@ -98,7 +98,6 @@ ENV_FILE="${SCRIPT_DIR}/.env"
 # with no project prefix.
 MEDIA_VOLUME="nautobot_media"
 GIT_VOLUME="nautobot_git"
-JOBS_VOLUME="nautobot_jobs"
 POSTGRES_VOLUME="nautobot_postgres_data"
 REDIS_VOLUME="nautobot_redis_data"
 GITLAB_CONFIG_VOLUME="gitlab_config"
@@ -108,13 +107,16 @@ GITLAB_DATA_VOLUME="gitlab_data"
 ALL_VOLUMES=(
     "$MEDIA_VOLUME"
     "$GIT_VOLUME"
-    "$JOBS_VOLUME"
     "$POSTGRES_VOLUME"
     "$REDIS_VOLUME"
     "$GITLAB_CONFIG_VOLUME"
     "$GITLAB_LOGS_VOLUME"
     "$GITLAB_DATA_VOLUME"
 )
+
+# Jobs are bind-mounted from ./jobs instead of a named volume, so
+# setup.sh just ensures the directory exists with correct ownership.
+JOBS_HOST_DIR="${SCRIPT_DIR}/jobs"
 
 # Subdirectories Nautobot expects inside the media volume.
 MEDIA_SUBDIRS=(
@@ -426,11 +428,19 @@ done
 docker run --rm \
     -v "${MEDIA_VOLUME}:/media" \
     -v "${GIT_VOLUME}:/git" \
-    -v "${JOBS_VOLUME}:/jobs" \
     alpine sh -c "
         mkdir -p ${MKDIR_ARGS}
-        chown -R ${NAUTOBOT_UID}:${NAUTOBOT_GID} /media /git /jobs
+        chown -R ${NAUTOBOT_UID}:${NAUTOBOT_GID} /media /git
     "
+
+# Ensure the bind-mounted jobs/ directory exists and is owned by the
+# nautobot user inside the container.  On macOS/Docker Desktop the
+# chown is cosmetic (virtualized file sharing handles permissions);
+# on Linux it is required so the container can read job files.
+mkdir -p "${JOBS_HOST_DIR}"
+docker run --rm \
+    -v "${JOBS_HOST_DIR}:/jobs" \
+    alpine chown -R "${NAUTOBOT_UID}:${NAUTOBOT_GID}" /jobs
 
 echo "  Done."
 
@@ -445,14 +455,14 @@ echo ""
 docker run --rm \
     -v "${MEDIA_VOLUME}:/media" \
     -v "${GIT_VOLUME}:/git" \
-    -v "${JOBS_VOLUME}:/jobs" \
+    -v "${JOBS_HOST_DIR}:/jobs" \
     alpine sh -c "
         echo '  ${MEDIA_VOLUME}  owner='\$(stat -c '%u:%g' /media);
         for d in /media/*/; do
             echo '    '\$(basename \$d)'/  owner='\$(stat -c '%u:%g' \$d);
         done;
         echo '  ${GIT_VOLUME}  owner='\$(stat -c '%u:%g' /git);
-        echo '  ${JOBS_VOLUME}  owner='\$(stat -c '%u:%g' /jobs);
+        echo '  ./jobs (bind mount)  owner='\$(stat -c '%u:%g' /jobs);
     "
 
 echo ""
