@@ -101,12 +101,13 @@ services:
     restart: unless-stopped
 
   # --------------------------------------------------------------------------
-  # PostgreSQL 16 — Primary Database
+  # PostgreSQL 17 — Primary Database
   # Required minimums: Nautobot 2.4 → 12+, Nautobot 3.0 → 14+, Nautobot 3.1 → 14+
-  # PostgreSQL 16 is compatible with all supported Nautobot versions.
+  # PostgreSQL 17 is compatible with all supported Nautobot versions and is
+  # officially supported by Django 5.2 (which Nautobot 3.x is built on).
   # --------------------------------------------------------------------------
   db:
-    image: postgres:16-alpine
+    image: postgres:17-alpine
     container_name: nautobot-db
     env_file:
       - .env

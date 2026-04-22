@@ -9,7 +9,7 @@ Production-ready Docker Compose deployment for [Nautobot 3.x](https://docs.nauto
 | **Nautobot** | Custom (based on `networktocode/nautobot:3.1-py3.12`) | Web UI, REST/GraphQL API, application server |
 | **Celery Worker** | Same custom image | Background task execution (jobs, webhooks, Git sync) |
 | **Celery Beat** | Same custom image | Scheduled task orchestration |
-| **PostgreSQL 16** | `postgres:16-alpine` | Primary relational database |
+| **PostgreSQL 17** | `postgres:17-alpine` | Primary relational database |
 | **Redis 7** | `redis:7-alpine` | Caching, Celery broker, and lock backend |
 | **GitLab CE** | `gitlab/gitlab-ce:latest` | Git repository server for config backups (opt-in) |
 
