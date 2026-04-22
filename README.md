@@ -9,7 +9,7 @@ Production-ready Docker Compose deployment for [Nautobot 3.x](https://docs.nauto
 | **Nautobot** | Custom (based on `networktocode/nautobot:3.1-py3.12`) | Web UI, REST/GraphQL API, application server |
 | **Celery Worker** | Same custom image | Background task execution (jobs, webhooks, Git sync) |
 | **Celery Beat** | Same custom image | Scheduled task orchestration |
-| **PostgreSQL 16** | `postgres:16-alpine` | Primary relational database |
+| **PostgreSQL 17** | `postgres:17-alpine` | Primary relational database |
 | **Redis 7** | `redis:7-alpine` | Caching, Celery broker, and lock backend |
 | **GitLab CE** | `gitlab/gitlab-ce:latest` | Git repository server for config backups (opt-in) |
 
@@ -119,9 +119,25 @@ All sensitive and deployment-specific values live in `.env`. See `env.example` f
 
 ### nautobot_config.py
 
-This file is copied into the image at build time (`COPY` in Dockerfile). It imports all defaults from `nautobot.core.settings` and overrides only what's needed. Most runtime settings are pulled from environment variables, keeping the config file portable across environments.
+This file is **bind-mounted** into the Nautobot, Celery worker, and Celery beat containers at `/opt/nautobot/nautobot_config.py`, so edits only require a service restart — not a full rebuild:
 
-> **Tip:** For live editing without rebuilds, uncomment the bind-mount line in `docker-compose.yml` under `x-nautobot-volumes`.
+```bash
+# After editing nautobot_config.py
+docker compose restart nautobot celery_worker celery_beat
+```
+
+It imports all defaults from `nautobot.core.settings` and overrides only what's needed. Most runtime settings are pulled from environment variables, keeping the config file portable across environments.
+
+The file is also `COPY`ed into the image by the Dockerfile as a fallback, so removing the bind mount (e.g. for a self-contained production image) still leaves a working config in place.
+
+**What triggers a rebuild vs. a restart:**
+
+| Change | Action |
+|--------|--------|
+| `nautobot_config.py` | `docker compose restart` |
+| Files in `./jobs/` | `docker compose restart` |
+| `.env` | `docker compose up -d` (recreates containers with new env) |
+| `requirements.txt` / `Dockerfile` / `NAUTOBOT_VERSION` | `docker compose build && docker compose up -d` |
 
 ## Operations
 
@@ -201,6 +217,39 @@ Major version upgrades require new App versions. This is a manual process — ea
    docker compose build --no-cache
    docker compose up
    ```
+
+### Upgrade PostgreSQL (major version)
+
+> ⚠️ **This only applies when pulling a commit that bumps the Postgres major version** (e.g. 16 → 17) into a stack that was *originally deployed from this project*. PostgreSQL data volumes are **not** compatible across major versions — starting a newer Postgres container against an older data directory will fail to start.
+>
+> This project is not intended as an upgrade path for arbitrary existing Nautobot deployments; it's a seed for new deployments or for stacks that were built from this project in the first place.
+
+If you're pulling a Postgres major-version bump and have existing data:
+
+1. **Dump the database while the old Postgres is still running:**
+   ```bash
+   ./backup.sh -t db
+   ```
+2. **Stop the stack and wipe the Postgres volume:**
+   ```bash
+   docker compose down
+   docker volume rm nautobot_postgres_data
+   docker volume create nautobot_postgres_data
+   ```
+3. **Start only the new Postgres container** so it can initialize the data directory with the new version:
+   ```bash
+   docker compose up -d db
+   ```
+4. **Restore the dump:**
+   ```bash
+   ./restore.sh -t db
+   ```
+5. **Start the rest of the stack:**
+   ```bash
+   docker compose up -d
+   ```
+
+Fresh installations via `./setup.sh` on a new host are unaffected — they just get the current Postgres version from the start.
 
 ## Volumes
 

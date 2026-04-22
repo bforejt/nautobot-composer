@@ -29,7 +29,11 @@ RUN if grep -qvE '^\s*(#|$)' /tmp/requirements.txt; then \
     fi && \
     rm /tmp/requirements.txt /tmp/constraints.txt
 
-# Copy the Nautobot configuration file into the image.
+# Copy the Nautobot configuration file into the image as a fallback.
+# docker-compose.yml bind-mounts the project copy over this path at runtime
+# so config edits only require a service restart, not a full rebuild.  The
+# COPY keeps the image self-contained in case the bind mount is removed
+# (e.g. for shipping a standalone production image).
 COPY nautobot_config.py /opt/nautobot/nautobot_config.py
 RUN chown nautobot:nautobot /opt/nautobot/nautobot_config.py
 
