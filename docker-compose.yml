@@ -20,6 +20,17 @@ x-nautobot-depends: &nautobot-depends
     redis:
       condition: service_healthy
 
+# Shared logging config — cap per-container log growth so long-running
+# lab and production deployments don't fill the host disk.  Applied to
+# every service via the *default-logging YAML anchor.  Adjust upward
+# if you rely on long retention and prefer an external log aggregator.
+x-default-logging: &default-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
 x-nautobot-volumes: &nautobot-volumes
   volumes:
     - nautobot_media:/opt/nautobot/media
@@ -39,7 +50,7 @@ services:
   # Nautobot — Web Application Server (uWSGI)
   # --------------------------------------------------------------------------
   nautobot:
-    <<: [*nautobot-build, *nautobot-env, *nautobot-depends, *nautobot-volumes]
+    <<: [*nautobot-build, *nautobot-env, *nautobot-depends, *nautobot-volumes, *default-logging]
     container_name: nautobot
     ports:
       - "80:8080"
@@ -60,7 +71,7 @@ services:
   # Celery Worker — Background Task Execution
   # --------------------------------------------------------------------------
   celery_worker:
-    <<: [*nautobot-build, *nautobot-env, *nautobot-depends, *nautobot-volumes]
+    <<: [*nautobot-build, *nautobot-env, *nautobot-depends, *nautobot-volumes, *default-logging]
     container_name: nautobot-celery-worker
     command: nautobot-server celery worker --loglevel INFO --events
     depends_on:
@@ -82,7 +93,7 @@ services:
   # Celery Beat — Scheduled Task Orchestration
   # --------------------------------------------------------------------------
   celery_beat:
-    <<: [*nautobot-build, *nautobot-env, *nautobot-depends, *nautobot-volumes]
+    <<: [*nautobot-build, *nautobot-env, *nautobot-depends, *nautobot-volumes, *default-logging]
     container_name: nautobot-celery-beat
     command: nautobot-server celery beat --loglevel INFO
     depends_on:
@@ -107,6 +118,7 @@ services:
   # officially supported by Django 5.2 (which Nautobot 3.x is built on).
   # --------------------------------------------------------------------------
   db:
+    <<: *default-logging
     image: postgres:17-alpine
     container_name: nautobot-db
     env_file:
@@ -125,12 +137,16 @@ services:
   # Redis 7 — Cache, Broker, and Lock Backend
   # --------------------------------------------------------------------------
   redis:
+    <<: *default-logging
     image: redis:7-alpine
     container_name: nautobot-redis
+    env_file:
+      - .env
+    # REDIS_MAXMEMORY is sourced from .env (default: 512mb — see env.example).
     command: >
       redis-server
       --appendonly yes
-      --maxmemory 512mb
+      --maxmemory ${REDIS_MAXMEMORY:-512mb}
       --maxmemory-policy allkeys-lru
     volumes:
       - nautobot_redis_data:/data
@@ -148,6 +164,7 @@ services:
   # Start with:  docker compose --profile gitlab up
   # First boot takes several minutes while GitLab runs internal configuration.
   gitlab:
+    <<: *default-logging
     image: gitlab/gitlab-ce:latest
     container_name: nautobot-gitlab
     profiles:

@@ -17,7 +17,19 @@ USER root
 # NOTE: The base image installs nautobot from a local wheel, so pip freeze
 # shows "nautobot @ file://..." instead of "nautobot==x.y.z".  We use
 # pip show to get the clean version number.
-RUN echo "nautobot==$(pip show nautobot | sed -n 's/^Version: //p')" > /tmp/constraints.txt
+#
+# Abort the build if we fail to capture a version — an empty or malformed
+# constraints file would silently allow pip to upgrade nautobot core,
+# which is exactly what this step exists to prevent.
+RUN set -e; \
+    NAUTOBOT_CORE_VERSION="$(pip show nautobot | sed -n 's/^Version: //p')"; \
+    if [ -z "$NAUTOBOT_CORE_VERSION" ]; then \
+        echo "ERROR: Could not determine installed nautobot version." >&2; \
+        echo "  'pip show nautobot' returned no Version field." >&2; \
+        exit 1; \
+    fi; \
+    echo "nautobot==${NAUTOBOT_CORE_VERSION}" > /tmp/constraints.txt; \
+    echo "Pinned nautobot core: ${NAUTOBOT_CORE_VERSION}"
 
 # Install Nautobot Apps and additional Python dependencies.
 # The requirements.txt file lists pip packages (one per line) to install

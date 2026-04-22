@@ -279,10 +279,12 @@ else
     SECRET_KEY="$(generate_secret_key)"
     echo "    SECRET_KEY:         generated (${#SECRET_KEY} chars)"
 
-    DB_PASSWORD="$(generate_alphanum 8)"
+    # 24 alphanumeric chars ≈ 143 bits of entropy.  Alphanumeric avoids
+    # quoting/escaping hazards in connection strings and shell one-liners.
+    DB_PASSWORD="$(generate_alphanum 24)"
     echo "    DB_PASSWORD:        generated (${#DB_PASSWORD} chars)"
 
-    SUPERUSER_PASSWORD="$(generate_alphanum 8)"
+    SUPERUSER_PASSWORD="$(generate_alphanum 24)"
     echo "    SUPERUSER_PASSWORD: generated (${#SUPERUSER_PASSWORD} chars)"
 
     API_TOKEN="$(generate_api_token)"
@@ -331,6 +333,7 @@ NAUTOBOT_REDIS_HOST=redis
 NAUTOBOT_REDIS_PORT=6379
 NAUTOBOT_REDIS_PASSWORD=
 NAUTOBOT_REDIS_SSL=False
+REDIS_MAXMEMORY=512mb
 
 # ---------------------------------------------------------------------------
 # Superuser — Created on First Start
