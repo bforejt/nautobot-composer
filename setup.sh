@@ -333,6 +333,7 @@ NAUTOBOT_REDIS_HOST=redis
 NAUTOBOT_REDIS_PORT=6379
 NAUTOBOT_REDIS_PASSWORD=
 NAUTOBOT_REDIS_SSL=False
+REDIS_MAXMEMORY=512mb
 
 # ---------------------------------------------------------------------------
 # Superuser — Created on First Start

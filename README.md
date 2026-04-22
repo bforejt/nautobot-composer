@@ -116,6 +116,26 @@ All sensitive and deployment-specific values live in `.env`. See `env.example` f
 | `NAUTOBOT_ALLOWED_HOSTS` | Comma-separated hostnames/IPs allowed to reach Nautobot |
 | `POSTGRES_PASSWORD` | PostgreSQL password |
 | `NAUTOBOT_SUPERUSER_*` | Initial admin account credentials |
+| `NAPALM_USERNAME` / `NAPALM_PASSWORD` / `NAPALM_TIMEOUT` | Device credentials for Apps that use NAPALM (Golden Config, Device Onboarding, etc.) |
+| `REDIS_MAXMEMORY` | Redis memory cap (default: `512mb`) |
+
+### NAPALM device credentials
+
+Several Apps (Golden Config, Device Onboarding, and others) use [NAPALM](https://napalm.readthedocs.io/) to connect to network devices. To enable device interaction, set these in `.env`:
+
+```env
+NAPALM_USERNAME=netadmin
+NAPALM_PASSWORD=<device-password>
+NAPALM_TIMEOUT=30
+```
+
+Restart the Nautobot services to pick up the changes:
+
+```bash
+docker compose up -d   # recreates containers with the new env
+```
+
+Left blank by default — Apps that don't use NAPALM are unaffected, and Apps that do will error with a clear credential message if they need them and haven't got them. For per-device credential overrides, use Nautobot's built-in **Secrets** framework instead of these globals.
 
 ### nautobot_config.py
 
@@ -178,9 +198,16 @@ docker compose exec nautobot nautobot-server post_upgrade
 ### View Logs
 
 ```bash
-docker compose logs -f nautobot
-docker compose logs -f celery_worker
+docker compose logs -f nautobot          # Web app (uWSGI, migrations, request logs)
+docker compose logs -f celery_worker     # Background job execution
+docker compose logs -f celery_beat       # Scheduled job dispatcher
+docker compose logs -f db redis          # Datastores
+
+# Tail all services at once
+docker compose logs -f
 ```
+
+Logs are rotated automatically at 10 MB × 5 files per service (see `x-default-logging` in `docker-compose.yml`).
 
 ### Upgrade Nautobot (patch release)
 
