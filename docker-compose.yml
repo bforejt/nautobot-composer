@@ -134,24 +134,32 @@ services:
     restart: unless-stopped
 
   # --------------------------------------------------------------------------
-  # Redis 7 — Cache, Broker, and Lock Backend
+  # Valkey 8 — Cache, Celery Broker, and Lock Backend
+  # --------------------------------------------------------------------------
+  # Valkey is a BSD-licensed fork of Redis 7.2, maintained by the Linux
+  # Foundation (AWS, Google, Oracle, et al).  It is drop-in compatible with
+  # the Redis wire protocol — Django and Celery don't know the difference.
+  # Chosen here over Redis 7.x/8.x because those are source-available
+  # (RSALv2/SSPLv1) or AGPLv3, which can cause friction for commercial
+  # downstream users.  Service/hostname/volume stay named "redis" since
+  # other services address it via NAUTOBOT_REDIS_HOST=redis.
   # --------------------------------------------------------------------------
   redis:
     <<: *default-logging
-    image: redis:7-alpine
+    image: valkey/valkey:8-alpine
     container_name: nautobot-redis
     env_file:
       - .env
     # REDIS_MAXMEMORY is sourced from .env (default: 512mb — see env.example).
     command: >
-      redis-server
+      valkey-server
       --appendonly yes
       --maxmemory ${REDIS_MAXMEMORY:-512mb}
       --maxmemory-policy allkeys-lru
     volumes:
       - nautobot_redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "valkey-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
