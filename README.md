@@ -307,8 +307,36 @@ docker exec nautobot-gitlab grep 'Password:' /etc/gitlab/initial_root_password
 - Set `NAUTOBOT_ALLOWED_HOSTS` to your actual FQDN(s).
 - Use strong, unique passwords for PostgreSQL and the superuser account.
 - Place a reverse proxy (nginx, Caddy, Traefik) in front for TLS termination and rate limiting.
-- Back up PostgreSQL regularly.
+- Back up PostgreSQL regularly — see [Backup & Restore](#backup--restore).
 - Consider external Redis (ElastiCache, etc.) for HA deployments.
+- **Set resource limits.** The defaults intentionally have no memory or CPU caps so lab environments can use whatever the host has available. For production, add `deploy.resources.limits` to each service in `docker-compose.yml` (or a `docker-compose.override.yml`) to prevent a runaway job from OOMing the host. A reasonable starting point:
+
+   ```yaml
+   # In a docker-compose.override.yml — starting point, tune to your load
+   services:
+     nautobot:
+       deploy:
+         resources:
+           limits:
+             memory: 4G
+     celery_worker:
+       deploy:
+         resources:
+           limits:
+             memory: 4G
+     db:
+       deploy:
+         resources:
+           limits:
+             memory: 2G
+     redis:
+       deploy:
+         resources:
+           limits:
+             memory: 1G
+   ```
+
+- **Container log rotation is already configured** (`max-size: 10m`, `max-file: 5` per service). Increase the retention in `docker-compose.yml`'s `x-default-logging` anchor if you don't have an external log aggregator.
 
 ## License
 
