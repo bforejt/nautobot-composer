@@ -121,19 +121,27 @@ fi
 # Verify the Nautobot service exists in the compose file.  Renaming the
 # service in docker-compose.yml without updating this script would silently
 # fail without this check.
-if ! docker compose -f "$COMPOSE_FILE" config --services 2>/dev/null \
-        | grep -qx "$NAUTOBOT_SERVICE"; then
+#
+# NOTE: We capture the service list and test with pure bash rather than
+# piping into `grep -qx`.  Under `set -o pipefail`, a `cmd | grep -qx`
+# pipeline returns SIGPIPE (141) when grep matches and exits early — the
+# leading `!` then flipped 141 to 0, falsely triggering this branch even
+# though the service WAS in the list.  Same root cause as the SIGPIPE
+# fixes already applied to setup.sh and restore.sh.
+SERVICES="$(docker compose -f "$COMPOSE_FILE" config --services 2>/dev/null || true)"
+if [[ $'\n'"$SERVICES"$'\n' != *$'\n'"$NAUTOBOT_SERVICE"$'\n'* ]]; then
     echo "  ERROR: service '$NAUTOBOT_SERVICE' not found in docker-compose.yml." >&2
     echo "         Available services:" >&2
-    docker compose -f "$COMPOSE_FILE" config --services 2>/dev/null \
-        | sed 's/^/           /' >&2 || true
+    if [[ -n "$SERVICES" ]]; then
+        printf '           %s\n' $SERVICES >&2
+    fi
     exit 1
 fi
 
 # Verify the service is actually running.  generate_test_data needs the web
 # container (with Django settings + migrations applied), not just the DB.
-if ! docker compose -f "$COMPOSE_FILE" ps --services --status=running 2>/dev/null \
-        | grep -qx "$NAUTOBOT_SERVICE"; then
+RUNNING="$(docker compose -f "$COMPOSE_FILE" ps --services --status=running 2>/dev/null || true)"
+if [[ $'\n'"$RUNNING"$'\n' != *$'\n'"$NAUTOBOT_SERVICE"$'\n'* ]]; then
     echo "  ERROR: service '$NAUTOBOT_SERVICE' is not running." >&2
     echo "         Start the stack first:" >&2
     echo "           ./setup.sh    # if .env / volumes don't exist yet" >&2
