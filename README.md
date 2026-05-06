@@ -184,6 +184,26 @@ Use `backup.sh` and `restore.sh` to manage database and media backups. Files are
 
 Run `./backup.sh --help` or `./restore.sh --help` for all options.
 
+### Load Test Data
+
+`load-test-data.sh` wraps Nautobot's built-in `nautobot-server generate_test_data` command to populate the database with synthetic devices, sites, IPs, etc. — useful for lab work, demos, and developing against a non-empty dataset. **Not for production databases.**
+
+```bash
+# Additive: generate test data on top of whatever is already in the DB
+./load-test-data.sh
+
+# Clean baseline: wipe the DB first, then generate (prompts for confirmation)
+./load-test-data.sh --flush
+
+# Same as above but non-interactive (CI / scripted)
+./load-test-data.sh --flush --yes
+
+# Custom seed — re-running with the same seed reproduces the same dataset
+./load-test-data.sh --seed my-lab
+```
+
+The default seed is `nautobot-lab`. The stack must be running (run `./setup.sh` and `docker compose up -d` first). Run `./load-test-data.sh --help` for all options.
+
 ### Run Nautobot Management Commands
 
 ```bash
