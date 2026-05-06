@@ -191,29 +191,71 @@ if [[ "$confirm" != "load" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Workaround: prune orphaned nautobot_ssot.ssotconfig content-type
+# Workaround: prune orphaned content-types
 # ---------------------------------------------------------------------------
-# nautobot-ssot 4.2.2 (the latest release on PyPI as of this writing)
-# ships an `SSoTConfig` model that registers a Django ContentType but
-# whose database table is never created by any migration.  When
 # generate_test_data iterates ContentType.objects.all() and calls
-# .exists() on each, it crashes with:
+# .exists() on every model class.  Two unrelated upstream bug
+# classes can leave orphans in django_content_type that crash that
+# iteration:
 #
-#     django.db.utils.ProgrammingError: relation
-#     "nautobot_ssot_ssotconfig" does not exist
+#   1. "Stale Python class" — content_type points to a model that
+#      no longer exists as a Python class (model_class() returns
+#      None).  Common when an app's migrations create the row, a
+#      later migration removes the model, but Django doesn't clean
+#      up the row.  Symptom:
+#         AttributeError: 'NoneType' object has no attribute 'objects'
+#      Fix: Django's built-in `remove_stale_contenttypes` command,
+#      which handles this case in general (any app, any model).
 #
-# The DELETE below removes ONLY that specific orphan, AND ONLY when its
-# table is genuinely absent (the NOT EXISTS guard).  When upstream
-# resolves the issue — by either creating the table or removing the
-# model — the WHERE clause matches nothing and this block becomes a
-# no-op.  REMOVE this block once nautobot-ssot ships a fix and we've
-# bumped the pin in requirements-3.x.txt.
+#   2. "Stale database table" — content_type points to a real model
+#      class but the database table was never created by any
+#      migration.  Specific to nautobot-ssot 4.2.2's SSoTConfig
+#      model.  Symptom:
+#         ProgrammingError: relation "nautobot_ssot_ssotconfig"
+#         does not exist
+#      `remove_stale_contenttypes` does NOT fix this because the
+#      Python class IS registered.  We need a targeted SQL DELETE
+#      against just that orphan.  Django's migrate also auto-creates
+#      auth_permission rows for the model, which FK back to
+#      django_content_type — those must be removed first to satisfy
+#      the FK constraint.
+#
+# Both cleanups are scoped so they're no-ops once upstream resolves
+# the underlying issues.  REMOVE the SSoT-specific block once
+# nautobot-ssot ships a fix and we've bumped the pin in
+# requirements-3.x.txt.  The remove_stale_contenttypes call can
+# remain — it's a generally-safe cleanup that benefits any app
+# upgrade path.
 
 echo ""
-echo "[2/4] Pruning known-stale nautobot-ssot content-type (4.2.2 workaround)..."
+echo "[2/4] Pruning orphaned content-types..."
 
+# 2a. Stale Python-class case (general).  --no-input skips the
+# per-row confirmation; nothing here we want to keep.
+echo "      - remove_stale_contenttypes (Django builtin)"
+docker compose -f "$COMPOSE_FILE" exec -T "$NAUTOBOT_SERVICE" \
+    nautobot-server remove_stale_contenttypes --no-input
+
+# 2b. Stale-table case (nautobot-ssot 4.2.2 specific).
+echo "      - nautobot_ssot.ssotconfig orphan (4.2.2 workaround)"
 docker compose -f "$COMPOSE_FILE" exec -T db \
     psql -U nautobot -d nautobot -v ON_ERROR_STOP=1 -q <<'SQL'
+-- Capture the orphan's id (if any) and clean up dependents first.
+WITH orphan AS (
+    SELECT id
+    FROM django_content_type
+    WHERE app_label = 'nautobot_ssot'
+      AND model = 'ssotconfig'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM information_schema.tables
+          WHERE table_schema = 'public'
+            AND table_name = 'nautobot_ssot_ssotconfig'
+      )
+)
+DELETE FROM auth_permission
+WHERE content_type_id IN (SELECT id FROM orphan);
+
 DELETE FROM django_content_type
 WHERE app_label = 'nautobot_ssot'
   AND model = 'ssotconfig'
