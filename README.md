@@ -204,6 +204,8 @@ Run `./backup.sh --help` or `./restore.sh --help` for all options.
 
 The default seed is `nautobot-lab`. The stack must be running (run `./setup.sh` and `docker compose up -d` first). Run `./load-test-data.sh --help` for all options.
 
+> Both `requirements-2.x.txt` and `requirements-3.x.txt` include `factory-boy`, which `generate_test_data` depends on (it's a dev-only dependency in upstream Nautobot). Remove it from the requirements file and rebuild if you don't load synthetic test data and want a leaner image.
+
 ### Run Nautobot Management Commands
 
 ```bash
