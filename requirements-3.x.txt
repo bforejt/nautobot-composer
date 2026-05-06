@@ -54,3 +54,13 @@ nautobot-device-onboarding>=5.0.0,<6.0.0
 
 # --- ChatOps (version 4.x for Nautobot 3.0 — different from the others) ---
 #nautobot-chatops>=4.0.0,<5.0.0
+
+# =============================================================================
+# Supporting libraries (not Nautobot Apps — no PLUGINS entry needed)
+# =============================================================================
+
+# --- factory-boy ---
+# Required by `nautobot-server generate_test_data`, which is a dev-only
+# dependency in upstream Nautobot.  Bundled here so ./load-test-data.sh
+# works out of the box.  Remove if you don't load synthetic test data.
+factory-boy>=3.3.0,<4.0.0
