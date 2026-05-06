@@ -2,19 +2,25 @@
 # =============================================================================
 # load-test-data.sh — Populate Nautobot with synthetic test data
 #
-# Wraps the built-in `nautobot-server generate_test_data` management command.
-# Uses a fixed seed by default so the generated dataset is reproducible.
+# Wraps the built-in `nautobot-server generate_test_data` management command
+# to populate a fresh Nautobot database with synthetic devices, sites, IPs,
+# etc. for demos, labs, and development against a non-empty dataset.
 #
-# Without --flush, generated data is added on top of whatever already exists
-# in the database.  With --flush, the database is wiped first.
+# THIS IS A FRESH-INSTALL ONLY OPERATION.
 #
-# THIS COMMAND IS NOT FOR PRODUCTION DATABASES.  --flush will delete data.
+#   - Run it once, immediately after `./setup.sh && docker compose up -d`.
+#   - It will FAIL on a database that already contains data — the seed
+#     produces deterministic IDs, so a second run hits unique-constraint
+#     errors on the very first table it tries to populate.
+#   - Recovery from a failed second run requires dropping and recreating
+#     the database (Django's flush does NOT handle Nautobot's full schema
+#     reliably).  This script does not attempt that.
+#
+# THIS COMMAND IS NOT FOR PRODUCTION DATABASES.
 #
 # Usage:
-#   ./load-test-data.sh                    Additive load with default seed
-#   ./load-test-data.sh --flush            Wipe DB, prompt, then load
-#   ./load-test-data.sh --flush --yes      Wipe DB, no prompt (CI/scripted)
-#   ./load-test-data.sh --seed my-lab      Custom seed (any string)
+#   ./load-test-data.sh                    Default seed (nautobot-lab)
+#   ./load-test-data.sh --seed my-lab      Custom seed
 # =============================================================================
 
 set -euo pipefail
@@ -38,33 +44,26 @@ NAUTOBOT_SERVICE="nautobot"
 # Parse arguments
 # ---------------------------------------------------------------------------
 
-FLUSH=false
-SKIP_CONFIRM=false
 SEED="nautobot-lab"
 
 usage() {
     cat <<EOF
-Usage: $0 [--flush] [--seed STRING] [--yes] [-h|--help]
+Usage: $0 [--seed STRING] [-h|--help]
 
-  --flush         Clear all existing data before generating.  DESTRUCTIVE.
   --seed STRING   Random seed for reproducible output (default: nautobot-lab).
-                  Re-running with the same seed produces the same dataset.
-  --yes           Skip the confirmation prompt (for non-interactive use).
-                  Only meaningful with --flush.
+                  The same seed always produces the same generated dataset,
+                  but you can only load it ONCE per database.
   -h, --help      Show this help message.
 
-Without --flush, the command runs ADDITIVELY against whatever data is
-already in the database.  Repeated runs without --flush will accumulate
-records — use --flush when you want a clean baseline.
+This script is intended to be run a single time, immediately after a
+fresh ./setup.sh + docker compose up -d.  Running it twice on the same
+database will fail with unique-constraint errors.  See the script
+header for details.
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --flush)
-            FLUSH=true
-            shift
-            ;;
         --seed)
             if [[ $# -lt 2 || -z "${2:-}" ]]; then
                 echo "ERROR: --seed requires a non-empty value." >&2
@@ -72,10 +71,6 @@ while [[ $# -gt 0 ]]; do
             fi
             SEED="$2"
             shift 2
-            ;;
-        --yes|-y)
-            SKIP_CONFIRM=true
-            shift
             ;;
         -h|--help)
             usage
@@ -167,29 +162,32 @@ DB_NAME="$(grep -E '^NAUTOBOT_DB_NAME=' "$ENV_FILE" 2>/dev/null \
 DB_NAME="${DB_NAME:-nautobot}"
 
 # ---------------------------------------------------------------------------
-# Confirmation (only when --flush)
+# Confirmation
 # ---------------------------------------------------------------------------
 
-if [[ "$FLUSH" == true && "$SKIP_CONFIRM" != true ]]; then
-    echo ""
-    echo "========================================"
-    echo "  NAUTOBOT TEST DATA — FLUSH AND LOAD"
-    echo "========================================"
-    echo ""
-    echo "This will WIPE the following before loading test data:"
-    echo "  Compose project:  $PROJECT_NAME"
-    echo "  Database:         $DB_NAME"
-    echo "  Service:          $NAUTOBOT_SERVICE"
-    echo ""
-    echo "Seed: $SEED"
-    echo ""
-    echo "ALL EXISTING NAUTOBOT DATA IN THIS DATABASE WILL BE LOST."
-    echo ""
-    read -rp "Type 'flush' to confirm: " confirm
-    if [[ "$confirm" != "flush" ]]; then
-        echo "Aborted."
-        exit 0
-    fi
+echo ""
+echo "========================================"
+echo "  NAUTOBOT TEST DATA LOAD"
+echo "========================================"
+echo ""
+echo "About to populate the database with synthetic test data:"
+echo "  Compose project:  $PROJECT_NAME"
+echo "  Database:         $DB_NAME"
+echo "  Service:          $NAUTOBOT_SERVICE"
+echo "  Seed:             $SEED"
+echo ""
+echo "WARNING: This is a FRESH-INSTALL OPERATION.  It must be run on a"
+echo "database that has never had test data loaded into it.  Running it"
+echo "a second time will fail with unique-constraint errors and leave"
+echo "the database in a partially-populated state."
+echo ""
+echo "If this database already has data, abort now and start over with"
+echo "a fresh ./reset.sh && ./setup.sh."
+echo ""
+read -rp "Type 'load' to confirm: " confirm
+if [[ "$confirm" != "load" ]]; then
+    echo "Aborted."
+    exit 0
 fi
 
 # ---------------------------------------------------------------------------
@@ -199,16 +197,11 @@ fi
 echo ""
 echo "[2/3] Running nautobot-server generate_test_data..."
 
-ARGS=(generate_test_data --no-input --seed "$SEED")
-if [[ "$FLUSH" == true ]]; then
-    ARGS=(generate_test_data --flush --no-input --seed "$SEED")
-fi
-
-# -T disables TTY allocation so the command works in non-interactive contexts
-# (CI, piping, etc.).  Stdout from the management command goes straight to the
-# user's terminal so they see Nautobot's progress output in real time.
+# -T disables TTY allocation so the command works in non-interactive contexts.
+# --no-input is the Django-side flag that suppresses the management command's
+# own internal prompts (independent of our wrapper-level prompt above).
 docker compose -f "$COMPOSE_FILE" exec -T "$NAUTOBOT_SERVICE" \
-    nautobot-server "${ARGS[@]}"
+    nautobot-server generate_test_data --no-input --seed "$SEED"
 
 # ---------------------------------------------------------------------------
 # Done
@@ -217,12 +210,5 @@ docker compose -f "$COMPOSE_FILE" exec -T "$NAUTOBOT_SERVICE" \
 echo ""
 echo "[3/3] Done."
 echo ""
-if [[ "$FLUSH" == true ]]; then
-    echo "  Database flushed and re-populated with test data."
-else
-    echo "  Test data added to existing database."
-fi
+echo "  Test data loaded successfully."
 echo "  Seed used: $SEED"
-echo ""
-echo "  Re-running with the same seed reproduces the same dataset:"
-echo "    ./load-test-data.sh --flush --seed \"$SEED\""

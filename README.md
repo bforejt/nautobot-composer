@@ -188,21 +188,17 @@ Run `./backup.sh --help` or `./restore.sh --help` for all options.
 
 `load-test-data.sh` wraps Nautobot's built-in `nautobot-server generate_test_data` command to populate the database with synthetic devices, sites, IPs, etc. — useful for lab work, demos, and developing against a non-empty dataset. **Not for production databases.**
 
+> ⚠️ **Single-use, fresh install only.** Run this once, right after `./setup.sh && docker compose up -d`. The seed produces deterministic IDs, so a second run on the same database fails immediately with unique-constraint errors and leaves the DB in a partially-populated state. Recovery means starting over with `./reset.sh && ./setup.sh`.
+
 ```bash
-# Additive: generate test data on top of whatever is already in the DB
+# Default seed (nautobot-lab)
 ./load-test-data.sh
 
-# Clean baseline: wipe the DB first, then generate (prompts for confirmation)
-./load-test-data.sh --flush
-
-# Same as above but non-interactive (CI / scripted)
-./load-test-data.sh --flush --yes
-
-# Custom seed — re-running with the same seed reproduces the same dataset
+# Custom seed
 ./load-test-data.sh --seed my-lab
 ```
 
-The default seed is `nautobot-lab`. The stack must be running (run `./setup.sh` and `docker compose up -d` first). Run `./load-test-data.sh --help` for all options.
+The script prompts for explicit confirmation (`Type 'load' to confirm:`) before populating data. The stack must already be running. Run `./load-test-data.sh --help` for all options.
 
 > Both `requirements-2.x.txt` and `requirements-3.x.txt` include `factory-boy`, which `generate_test_data` depends on (it's a dev-only dependency in upstream Nautobot). Remove it from the requirements file and rebuild if you don't load synthetic test data and want a leaner image.
 
