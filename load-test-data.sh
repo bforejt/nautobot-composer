@@ -202,18 +202,39 @@ fi
 #     django.db.utils.ProgrammingError: relation
 #     "nautobot_ssot_ssotconfig" does not exist
 #
-# The DELETE below removes ONLY that specific orphan, AND ONLY when its
-# table is genuinely absent (the NOT EXISTS guard).  When upstream
-# resolves the issue — by either creating the table or removing the
-# model — the WHERE clause matches nothing and this block becomes a
-# no-op.  REMOVE this block once nautobot-ssot ships a fix and we've
-# bumped the pin in requirements-3.x.txt.
+# Django's migrate also auto-creates `auth_permission` rows (the
+# default view/add/change/delete permissions) for the orphan model,
+# which FK back to django_content_type.  Both must be removed in
+# dependency order: permissions first, then the content-type.
+#
+# All deletes are scoped by a NOT EXISTS guard against the missing
+# table, so if upstream eventually creates the table OR removes the
+# model entirely, every WHERE clause here matches nothing and this
+# block becomes a no-op.  Self-healing.  REMOVE this block once
+# nautobot-ssot ships a fix and we've bumped the pin in
+# requirements-3.x.txt.
 
 echo ""
 echo "[2/4] Pruning known-stale nautobot-ssot content-type (4.2.2 workaround)..."
 
 docker compose -f "$COMPOSE_FILE" exec -T db \
     psql -U nautobot -d nautobot -v ON_ERROR_STOP=1 -q <<'SQL'
+-- Capture the orphan's id (if any) and clean up dependents first.
+WITH orphan AS (
+    SELECT id
+    FROM django_content_type
+    WHERE app_label = 'nautobot_ssot'
+      AND model = 'ssotconfig'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM information_schema.tables
+          WHERE table_schema = 'public'
+            AND table_name = 'nautobot_ssot_ssotconfig'
+      )
+)
+DELETE FROM auth_permission
+WHERE content_type_id IN (SELECT id FROM orphan);
+
 DELETE FROM django_content_type
 WHERE app_label = 'nautobot_ssot'
   AND model = 'ssotconfig'
