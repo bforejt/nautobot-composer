@@ -88,7 +88,7 @@ done
 # Preflight checks
 # ---------------------------------------------------------------------------
 
-echo "[1/3] Preflight checks..."
+echo "[1/4] Preflight checks..."
 
 if ! command -v docker &>/dev/null; then
     echo "  ERROR: docker is not installed or not in PATH." >&2
@@ -191,11 +191,46 @@ if [[ "$confirm" != "load" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Workaround: prune orphaned nautobot_ssot.ssotconfig content-type
+# ---------------------------------------------------------------------------
+# nautobot-ssot 4.2.2 (the latest release on PyPI as of this writing)
+# ships an `SSoTConfig` model that registers a Django ContentType but
+# whose database table is never created by any migration.  When
+# generate_test_data iterates ContentType.objects.all() and calls
+# .exists() on each, it crashes with:
+#
+#     django.db.utils.ProgrammingError: relation
+#     "nautobot_ssot_ssotconfig" does not exist
+#
+# The DELETE below removes ONLY that specific orphan, AND ONLY when its
+# table is genuinely absent (the NOT EXISTS guard).  When upstream
+# resolves the issue — by either creating the table or removing the
+# model — the WHERE clause matches nothing and this block becomes a
+# no-op.  REMOVE this block once nautobot-ssot ships a fix and we've
+# bumped the pin in requirements-3.x.txt.
+
+echo ""
+echo "[2/4] Pruning known-stale nautobot-ssot content-type (4.2.2 workaround)..."
+
+docker compose -f "$COMPOSE_FILE" exec -T db \
+    psql -U nautobot -d nautobot -v ON_ERROR_STOP=1 -q <<'SQL'
+DELETE FROM django_content_type
+WHERE app_label = 'nautobot_ssot'
+  AND model = 'ssotconfig'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM information_schema.tables
+      WHERE table_schema = 'public'
+        AND table_name = 'nautobot_ssot_ssotconfig'
+  );
+SQL
+
+# ---------------------------------------------------------------------------
 # Run generate_test_data
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "[2/3] Running nautobot-server generate_test_data..."
+echo "[3/4] Running nautobot-server generate_test_data..."
 
 # -T disables TTY allocation so the command works in non-interactive contexts.
 # --no-input is the Django-side flag that suppresses the management command's
@@ -208,7 +243,7 @@ docker compose -f "$COMPOSE_FILE" exec -T "$NAUTOBOT_SERVICE" \
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "[3/3] Done."
+echo "[4/4] Done."
 echo ""
 echo "  Test data loaded successfully."
 echo "  Seed used: $SEED"
