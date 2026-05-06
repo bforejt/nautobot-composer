@@ -383,6 +383,29 @@ docker exec nautobot-gitlab grep 'Password:' /etc/gitlab/initial_root_password
 
 - **Container log rotation is already configured** (`max-size: 10m`, `max-file: 5` per service). Increase the retention in `docker-compose.yml`'s `x-default-logging` anchor if you don't have an external log aggregator.
 
+### Running as a systemd service (Linux)
+
+The compose file already uses `restart: unless-stopped` on every service, so as long as the Docker daemon is enabled (`systemctl enable docker`) the stack comes back after a reboot on its own. **You don't need a systemd unit for that.**
+
+Add one if you want `systemctl` ergonomics: a unified start/stop interface, journald integration for the wrapper-level events, and ordering against other system units. The repo includes a template at [`systemd/nautobot-composer.service`](systemd/nautobot-composer.service):
+
+```bash
+# Copy the project to a stable system location
+sudo cp -r . /opt/nautobot-composer
+
+# Install and enable the unit (edit WorkingDirectory if you used a different path)
+sudo cp systemd/nautobot-composer.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now nautobot-composer
+
+# Verify
+systemctl status nautobot-composer
+```
+
+`ExecStart` runs `docker compose up -d`; `ExecStop` runs `docker compose down`. The unit `Requires=docker.service`, so if Docker is offline it won't start. `Type=oneshot` + `RemainAfterExit=yes` keep the unit reported as `active (exited)` while the containers run independently of systemd.
+
+**macOS / Windows:** the equivalent is Docker Desktop's "Start when you sign in" setting (default on). The compose `restart` policy then handles reboot survival. macOS launchd / Windows service-manager configurations aren't shipped here because Docker Desktop on those platforms is intended for interactive sessions, not unattended servers.
+
 ## License
 
 This deployment configuration is provided under the [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) license, consistent with Nautobot itself.

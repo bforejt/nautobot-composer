@@ -1,0 +1,41 @@
+; nautobot-composer.service — optional systemd unit for the Compose stack.
+;
+; You do NOT need this unit just for the stack to survive a reboot — every
+; service in docker-compose.yml already has `restart: unless-stopped`, so
+; as long as the Docker daemon is enabled (`systemctl enable docker`) the
+; containers come back automatically.
+;
+; Install this unit if you want `systemctl` ergonomics: a unified
+; start/stop interface, journald integration for the wrapper-level
+; events, and ordering against other systemd units.
+;
+; Install (Linux only):
+;   sudo cp -r . /opt/nautobot-composer
+;   sudo cp systemd/nautobot-composer.service /etc/systemd/system/
+;   # Edit WorkingDirectory below if you used a different path.
+;   sudo systemctl daemon-reload
+;   sudo systemctl enable --now nautobot-composer
+;
+; macOS / Windows: use Docker Desktop's "Start when you sign in" setting
+; instead of this unit.
+
+[Unit]
+Description=Nautobot Docker Compose stack
+Documentation=https://github.com/bforejt/nautobot-composer
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/nautobot-composer
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+# Generous timeout so first-boot DB migrations have room to finish.
+# Mirrors the start_period budget already provisioned for the nautobot
+# service in docker-compose.yml.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target
