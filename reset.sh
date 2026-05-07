@@ -48,7 +48,8 @@ for arg in "$@"; do
             echo "Usage: $0 [--force] [--rebuild]"
             echo ""
             echo "  --force    Skip confirmation prompt"
-            echo "  --rebuild  After reset, run setup.sh to reinitialize"
+            echo "  --rebuild  After reset, run 'setup.sh --build --start --wait'"
+            echo "             to bring the stack back up automatically"
             exit 0
             ;;
         *)
@@ -164,13 +165,11 @@ echo "Reset complete."
 
 if [[ "$REBUILD" == true ]]; then
     echo ""
-    echo "Running setup.sh to reinitialize..."
+    echo "Running setup.sh --build --start --wait to reinitialize..."
     echo ""
-    exec "${SCRIPT_DIR}/setup.sh"
+    exec "${SCRIPT_DIR}/setup.sh" --build --start --wait
 else
     echo ""
     echo "To reinitialize:"
-    echo "  ./setup.sh"
-    echo "  docker compose build"
-    echo "  docker compose up -d"
+    echo "  ./setup.sh --build --start --wait"
 fi
