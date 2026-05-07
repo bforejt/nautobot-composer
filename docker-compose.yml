@@ -1,13 +1,18 @@
 ---
 # Nautobot — Docker Compose
-# Supports Nautobot 2.4, 3.0, and 3.1 — select the version via ./setup.sh -v
-# (or by editing NAUTOBOT_VERSION in the Dockerfile).
+# Supports Nautobot 2.4, 3.0, and 3.1 — select the version via ./setup.sh -v,
+# which writes NAUTOBOT_VERSION into .env where this file picks it up below.
 # Docs: https://docs.nautobot.com/projects/core/en/stable/user-guide/administration/guides/docker/
 
 x-nautobot-build: &nautobot-build
   build:
     context: .
     dockerfile: Dockerfile
+    # The :? operator makes Compose abort with a clear error if the
+    # variable is missing (e.g. if the user runs `docker compose build`
+    # without first running setup.sh to generate .env).
+    args:
+      NAUTOBOT_VERSION: ${NAUTOBOT_VERSION:?NAUTOBOT_VERSION is not set. Run ./setup.sh first to generate .env.}
 
 x-nautobot-env: &nautobot-env
   env_file:

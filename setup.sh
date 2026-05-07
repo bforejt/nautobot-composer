@@ -26,6 +26,9 @@
 NAUTOBOT_VERSION="3.1"
 PYTHON_VERSION="3.12"
 DEBUG_MODE=false
+DO_BUILD=false
+DO_START=false
+DO_WAIT=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -37,24 +40,55 @@ while [[ $# -gt 0 ]]; do
             PYTHON_VERSION="$2"
             shift 2
             ;;
+        --build)
+            DO_BUILD=true
+            shift
+            ;;
+        --start)
+            DO_START=true
+            shift
+            ;;
+        --wait)
+            DO_WAIT=true
+            shift
+            ;;
         --debug)
             DEBUG_MODE=true
             shift
             ;;
         -h|--help)
-            echo "Usage: ./setup.sh [-v VERSION] [-p PYTHON] [--debug]"
-            echo ""
-            echo "Options:"
-            echo "  -v, --version VERSION   Nautobot version (default: 3.1)"
-            echo "  -p, --python  PYTHON    Python version suffix (default: 3.12)"
-            echo "      --debug             Enable bash trace for troubleshooting"
-            echo "  -h, --help              Show this help message"
-            echo ""
-            echo "Examples:"
-            echo "  ./setup.sh                     # 3.1-py3.12 (default)"
-            echo "  ./setup.sh -v 3.0              # 3.0-py3.12"
-            echo "  ./setup.sh -v 2.4              # 2.4-py3.12"
-            echo "  ./setup.sh -v 3.1 -p 3.11      # 3.1-py3.11"
+            cat <<'HELP'
+Usage: ./setup.sh [-v VERSION] [-p PYTHON] [--build] [--start] [--wait] [--debug]
+
+Options:
+  -v, --version VERSION   Nautobot version (default: 3.1)
+  -p, --python  PYTHON    Python version suffix (default: 3.12)
+      --build             After setup, run 'docker compose build'
+      --start             After setup (and --build if given), run
+                          'docker compose up -d'
+      --wait              After --start, poll the nautobot container's
+                          health and block until it reports 'healthy'
+                          (15 minute timeout — first-boot migrations
+                          can be slow)
+      --debug             Enable bash trace for troubleshooting
+  -h, --help              Show this help message
+
+Examples:
+  # Default: just initialize secrets, volumes, and version selection.
+  ./setup.sh
+
+  # First-time install in one shot — set up, build, start, wait until healthy.
+  ./setup.sh --build --start --wait
+
+  # Switch to a different Nautobot version on an existing install.
+  ./setup.sh -v 3.0 --build --start --wait
+
+  # Older Nautobot 2.x line.
+  ./setup.sh -v 2.4 --build --start --wait
+
+  # Pin a different Python version.
+  ./setup.sh -v 3.1 -p 3.11
+HELP
             exit 0
             ;;
         *)
@@ -64,6 +98,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# --wait without --start is meaningless; treat it as an alias for the pair.
+if [[ "$DO_WAIT" == true && "$DO_START" != true ]]; then
+    DO_START=true
+fi
 
 NAUTOBOT_IMAGE_TAG="${NAUTOBOT_VERSION}-py${PYTHON_VERSION}"
 
@@ -303,6 +342,10 @@ else
 # ---------------------------------------------------------------------------
 # Nautobot Core
 # ---------------------------------------------------------------------------
+# Image tag for the upstream Nautobot base image.  Read at build time as
+# a docker compose build-arg.  Set or changed via 'setup.sh -v <version>'.
+NAUTOBOT_VERSION=${NAUTOBOT_IMAGE_TAG}
+
 NAUTOBOT_SECRET_KEY=${SECRET_KEY}
 NAUTOBOT_ALLOWED_HOSTS=*
 NAUTOBOT_DEBUG=False
@@ -368,36 +411,52 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# Set Nautobot version in Dockerfile and select requirements file
+# Configure Nautobot version (image tag in .env, requirements.txt symlink)
 # ---------------------------------------------------------------------------
 
 echo ""
 echo "[4/6] Configuring Nautobot version..."
 
-DOCKERFILE="${SCRIPT_DIR}/Dockerfile"
-CURRENT_TAG="$(sed -n 's/^ARG NAUTOBOT_VERSION=//p' "$DOCKERFILE")"
-
-if [[ "$CURRENT_TAG" == "$NAUTOBOT_IMAGE_TAG" ]]; then
-    echo "  Dockerfile already set to ${NAUTOBOT_IMAGE_TAG} — no change."
-else
-    sed -i.bak "s/^ARG NAUTOBOT_VERSION=.*/ARG NAUTOBOT_VERSION=${NAUTOBOT_IMAGE_TAG}/" "$DOCKERFILE"
-    rm -f "${DOCKERFILE}.bak"
-    echo "  Dockerfile: ${CURRENT_TAG} → ${NAUTOBOT_IMAGE_TAG}"
+# Persist the resolved image tag in .env so docker-compose.yml's build-args
+# picks it up at build time.  This replaces the older approach of rewriting
+# the Dockerfile in place — that mutated a tracked file on every version
+# switch and showed up as uncommitted changes in `git status`.
+if [[ -f "$ENV_FILE" ]] && grep -qE '^NAUTOBOT_VERSION=' "$ENV_FILE"; then
+    # Update existing line.
+    sed -i.bak "s|^NAUTOBOT_VERSION=.*|NAUTOBOT_VERSION=${NAUTOBOT_IMAGE_TAG}|" "$ENV_FILE"
+    rm -f "${ENV_FILE}.bak"
+    echo "  .env: NAUTOBOT_VERSION → ${NAUTOBOT_IMAGE_TAG}"
+elif [[ -f "$ENV_FILE" ]]; then
+    # Append to an existing .env that predates this scheme.
+    printf '\nNAUTOBOT_VERSION=%s\n' "$NAUTOBOT_IMAGE_TAG" >> "$ENV_FILE"
+    echo "  .env: NAUTOBOT_VERSION appended (${NAUTOBOT_IMAGE_TAG})"
 fi
+# If .env was just created above, NAUTOBOT_VERSION is already in it via
+# the heredoc (see [3/6]).
 
 # Select the version-specific requirements file based on the major version.
 # requirements-2.x.txt and requirements-3.x.txt contain compatible App pins
 # for their respective Nautobot major versions.
+#
+# Use a symlink rather than `cp` so that edits to the source file (e.g.
+# adding a new App for testing) are picked up on the next build without
+# re-running setup.sh.  Docker COPY follows symlinks within the build
+# context and copies the resolved file content, so this works cleanly.
 MAJOR_VERSION="${NAUTOBOT_VERSION%%.*}"
-REQUIREMENTS_SRC="${SCRIPT_DIR}/requirements-${MAJOR_VERSION}.x.txt"
+REQUIREMENTS_SRC="requirements-${MAJOR_VERSION}.x.txt"
+REQUIREMENTS_DEST="${SCRIPT_DIR}/requirements.txt"
 
-if [[ ! -f "$REQUIREMENTS_SRC" ]]; then
+if [[ ! -f "${SCRIPT_DIR}/${REQUIREMENTS_SRC}" ]]; then
     echo "  WARNING: No requirements file found for Nautobot ${MAJOR_VERSION}.x" >&2
-    echo "           Expected: ${REQUIREMENTS_SRC}" >&2
-    echo "           requirements.txt was not changed." >&2
+    echo "           Expected: ${SCRIPT_DIR}/${REQUIREMENTS_SRC}" >&2
+    echo "           requirements.txt symlink was not (re)created." >&2
 else
-    cp "$REQUIREMENTS_SRC" "${SCRIPT_DIR}/requirements.txt"
-    echo "  requirements.txt ← requirements-${MAJOR_VERSION}.x.txt"
+    # -s symbolic, -f overwrite if it exists, -n treat dest as plain file
+    # (don't follow if it's already a symlink to a directory).  Relative
+    # target so the symlink stays valid regardless of where the project
+    # is cloned to.
+    ln -sfn "$REQUIREMENTS_SRC" "$REQUIREMENTS_DEST"
+    echo "  requirements.txt → ${REQUIREMENTS_SRC} (symlink)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -469,11 +528,90 @@ docker run --rm \
     "
 
 echo ""
-echo "Setup complete. Next steps:"
-echo "  1. Review .env and adjust NAUTOBOT_ALLOWED_HOSTS for production."
-echo "  2. Build the Nautobot image:   docker compose build"
-echo "  3. Start the stack (first run — use foreground mode to watch migrations):"
-echo "       docker compose up"
-echo "     Once everything is healthy, Ctrl+C and restart detached:"
-echo "       docker compose up -d"
+echo "Setup complete."
+
+# ---------------------------------------------------------------------------
+# Optional build / start / wait phases
+# ---------------------------------------------------------------------------
+
+if [[ "$DO_BUILD" == true ]]; then
+    echo ""
+    echo "Building the Nautobot image (docker compose build)..."
+    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" build
+fi
+
+if [[ "$DO_START" == true ]]; then
+    echo ""
+    echo "Starting the stack (docker compose up -d)..."
+    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" up -d
+fi
+
+if [[ "$DO_WAIT" == true ]]; then
+    echo ""
+    echo "Waiting for the nautobot container to report healthy..."
+    echo "  (15-minute timeout — first-boot migrations can be slow)"
+
+    # Poll Docker's healthcheck status.  This works whether the user
+    # specified `container_name: nautobot` (current default) or relies
+    # on Compose's auto-naming.  We resolve the container by service
+    # name through Compose, then ask Docker for its current health.
+    deadline=$(($(date +%s) + 900))
+    last_status=""
+    while true; do
+        cid="$(docker compose -f "${SCRIPT_DIR}/docker-compose.yml" ps -q nautobot 2>/dev/null || true)"
+        if [[ -z "$cid" ]]; then
+            echo "  ERROR: nautobot container not found — did 'compose up -d' succeed?" >&2
+            exit 1
+        fi
+
+        status="$(docker inspect --format='{{.State.Health.Status}}' "$cid" 2>/dev/null || echo unknown)"
+        if [[ "$status" != "$last_status" ]]; then
+            # Newline before the first status, then carriage return for updates.
+            [[ -n "$last_status" ]] && echo
+            printf '  status: %s' "$status"
+            last_status="$status"
+        else
+            printf '.'
+        fi
+
+        case "$status" in
+            healthy)
+                echo
+                echo "  nautobot is healthy."
+                break
+                ;;
+            unhealthy)
+                echo
+                echo "  ERROR: nautobot reported unhealthy.  Recent logs:" >&2
+                docker compose -f "${SCRIPT_DIR}/docker-compose.yml" logs --tail 50 nautobot >&2
+                exit 1
+                ;;
+        esac
+
+        if [[ $(date +%s) -ge $deadline ]]; then
+            echo
+            echo "  ERROR: timed out after 15 minutes.  Recent logs:" >&2
+            docker compose -f "${SCRIPT_DIR}/docker-compose.yml" logs --tail 50 nautobot >&2
+            exit 1
+        fi
+        sleep 5
+    done
+fi
+
+# ---------------------------------------------------------------------------
+# Final next-steps message
+# ---------------------------------------------------------------------------
+
+echo ""
+if [[ "$DO_START" == true ]]; then
+    echo "Stack is running.  Verify with:"
+    echo "  docker compose ps"
+    echo "  curl -fsSL http://localhost/health/"
+else
+    echo "Next steps:"
+    echo "  1. Review .env and adjust NAUTOBOT_ALLOWED_HOSTS for production."
+    echo "  2. Build:    docker compose build"
+    echo "  3. Start:    docker compose up -d"
+    echo "  Or rerun:    ./setup.sh --build --start --wait"
+fi
 echo ""

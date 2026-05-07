@@ -1,4 +1,9 @@
-ARG NAUTOBOT_VERSION=3.1-py3.12
+# NAUTOBOT_VERSION is supplied at build time by docker-compose.yml's
+# x-nautobot-build anchor, which sources it from .env (created by
+# setup.sh).  No default here on purpose — building outside Compose
+# without --build-arg fails fast on the FROM line rather than silently
+# producing a broken image.
+ARG NAUTOBOT_VERSION
 FROM networktocode/nautobot:${NAUTOBOT_VERSION}
 
 # Switch to root for package installation and file operations.
