@@ -347,11 +347,15 @@ echo "Reset complete."
 
 if [[ "$REBUILD" == true ]]; then
     echo ""
-    echo "Running setup.sh ${SETUP_VERSION_ARGS[*]} ${SETUP_PYTHON_ARGS[*]} --build --start --wait..."
+    # Use ${arr[*]:-} for the display, and the ${arr[@]+"${arr[@]}"} idiom for
+    # the exec.  Older bash (e.g. macOS's bundled 3.2) treats expansion of an
+    # empty array under `set -u` as an unbound-variable error; both forms above
+    # are bash 3.2-safe and emit nothing when the array is empty.
+    echo "Running setup.sh ${SETUP_VERSION_ARGS[*]:-} ${SETUP_PYTHON_ARGS[*]:-} --build --start --wait..."
     echo ""
     exec "${SCRIPT_DIR}/setup.sh" \
-        "${SETUP_VERSION_ARGS[@]}" \
-        "${SETUP_PYTHON_ARGS[@]}" \
+        ${SETUP_VERSION_ARGS[@]+"${SETUP_VERSION_ARGS[@]}"} \
+        ${SETUP_PYTHON_ARGS[@]+"${SETUP_PYTHON_ARGS[@]}"} \
         --build --start --wait
 else
     echo ""
