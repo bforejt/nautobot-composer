@@ -39,26 +39,79 @@ ALL_VOLUMES=(
 
 FORCE=false
 REBUILD=false
+# Forwarded to setup.sh on --rebuild.  Empty arrays = use setup.sh defaults.
+SETUP_VERSION_ARGS=()
+SETUP_PYTHON_ARGS=()
 
-for arg in "$@"; do
-    case "$arg" in
-        --force)   FORCE=true ;;
-        --rebuild) REBUILD=true ;;
+usage() {
+    cat <<EOF
+Usage: $0 [--force] [--rebuild [-v VERSION] [-p PYTHON]]
+
+  --force                 Skip confirmation prompt
+  --rebuild               After reset, run 'setup.sh --build --start --wait'
+                          to bring the stack back up automatically
+  -v, --version VERSION   Nautobot version to rebuild against (passed to
+                          setup.sh).  Only valid with --rebuild.
+  -p, --python  PYTHON    Python version suffix (passed to setup.sh).
+                          Only valid with --rebuild.
+  -h, --help              Show this help message
+
+Examples:
+  ./reset.sh                              # confirm, then reset only
+  ./reset.sh --force                      # silent reset
+  ./reset.sh --force --rebuild            # silent nuke + rebuild on default version
+  ./reset.sh --rebuild -v 2.4             # confirm, then rebuild on Nautobot 2.4
+  ./reset.sh --force --rebuild -v 3.0     # silent nuke + rebuild on 3.0
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --force)
+            FORCE=true
+            shift
+            ;;
+        --rebuild)
+            REBUILD=true
+            shift
+            ;;
+        -v|--version)
+            if [[ $# -lt 2 || -z "${2:-}" ]]; then
+                echo "ERROR: $1 requires a non-empty value." >&2
+                exit 1
+            fi
+            SETUP_VERSION_ARGS=( -v "$2" )
+            shift 2
+            ;;
+        -p|--python)
+            if [[ $# -lt 2 || -z "${2:-}" ]]; then
+                echo "ERROR: $1 requires a non-empty value." >&2
+                exit 1
+            fi
+            SETUP_PYTHON_ARGS=( -p "$2" )
+            shift 2
+            ;;
         --help|-h)
-            echo "Usage: $0 [--force] [--rebuild]"
-            echo ""
-            echo "  --force    Skip confirmation prompt"
-            echo "  --rebuild  After reset, run 'setup.sh --build --start --wait'"
-            echo "             to bring the stack back up automatically"
+            usage
             exit 0
             ;;
         *)
-            echo "Unknown option: $arg" >&2
-            echo "Usage: $0 [--force] [--rebuild]" >&2
+            echo "Unknown option: $1" >&2
+            usage >&2
             exit 1
             ;;
     esac
 done
+
+# -v / -p only make sense when we're going to invoke setup.sh.  Catch the
+# nonsensical combo early rather than silently ignoring the flags.
+if [[ "$REBUILD" != true ]]; then
+    if [[ ${#SETUP_VERSION_ARGS[@]} -gt 0 || ${#SETUP_PYTHON_ARGS[@]} -gt 0 ]]; then
+        echo "ERROR: -v and -p are only meaningful with --rebuild." >&2
+        usage >&2
+        exit 1
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Preflight checks
@@ -165,9 +218,12 @@ echo "Reset complete."
 
 if [[ "$REBUILD" == true ]]; then
     echo ""
-    echo "Running setup.sh --build --start --wait to reinitialize..."
+    echo "Running setup.sh ${SETUP_VERSION_ARGS[*]} ${SETUP_PYTHON_ARGS[*]} --build --start --wait..."
     echo ""
-    exec "${SCRIPT_DIR}/setup.sh" --build --start --wait
+    exec "${SCRIPT_DIR}/setup.sh" \
+        "${SETUP_VERSION_ARGS[@]}" \
+        "${SETUP_PYTHON_ARGS[@]}" \
+        --build --start --wait
 else
     echo ""
     echo "To reinitialize:"
