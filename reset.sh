@@ -209,6 +209,8 @@ if [[ "$FORCE" != true ]]; then
     echo ""
     echo "This will permanently destroy:"
     echo "  - All running Nautobot containers"
+    echo "  - Any container still attached to this project's volumes —"
+    echo "    even from a different Compose project (force-removed)"
     echo "  - All Docker volumes (DATABASE, Redis, media, git, jobs)"
     echo "  - The .env file (secrets, passwords, API tokens)"
     echo "  - Locally built Nautobot images"
@@ -229,11 +231,62 @@ fi
 
 echo "[1/4] Stopping containers..."
 
-if docker compose -f "${SCRIPT_DIR}/docker-compose.yml" ps -q &>/dev/null; then
-    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" down --remove-orphans 2>/dev/null || true
-    echo "  Containers stopped and removed."
+# Try the standard Compose-managed cleanup first.  Note: we deliberately do
+# NOT silence stderr — if `down` hits a real error (daemon issues, etc.),
+# the user should see it.  We do tolerate non-zero exit so the orphan-cleanup
+# below still runs.
+docker compose -f "${SCRIPT_DIR}/docker-compose.yml" down --remove-orphans || true
+echo "  docker compose down complete."
+
+# `compose down` only stops containers Docker considers part of the current
+# Compose project (auto-derived from directory name or COMPOSE_PROJECT_NAME).
+# Our volumes are external (intentional — they outlive `down` so data
+# survives normal stack restarts).  But that same property means the volumes
+# can be held by phantom containers from a previous project context: a
+# different worktree, a renamed parent dir, a different shell with
+# COMPOSE_PROJECT_NAME set, an older clone that's since been removed.
+# Detect those phantoms before phase 2 tries to delete the volumes — that's
+# what produces the otherwise-mysterious "volume is in use" error.
+
+ORPHAN_CONTAINERS=()
+for vol in "${ALL_VOLUMES[@]}"; do
+    while IFS= read -r cid; do
+        [[ -z "$cid" ]] && continue
+        ORPHAN_CONTAINERS+=( "$cid" )
+    done < <(docker ps -aq --filter "volume=$vol" 2>/dev/null || true)
+done
+
+if [[ ${#ORPHAN_CONTAINERS[@]} -gt 0 ]]; then
+    # Deduplicate (a container can mount more than one of our volumes).
+    UNIQUE_ORPHANS=()
+    while IFS= read -r cid; do
+        [[ -n "$cid" ]] && UNIQUE_ORPHANS+=( "$cid" )
+    done < <(printf '%s\n' "${ORPHAN_CONTAINERS[@]}" | sort -u)
+
+    echo ""
+    echo "  Found ${#UNIQUE_ORPHANS[@]} container(s) still attached to project volumes:"
+    for cid in "${UNIQUE_ORPHANS[@]}"; do
+        info="$(docker inspect "$cid" \
+            --format '{{.Name}} (project={{index .Config.Labels "com.docker.compose.project"}}, image={{.Config.Image}})' \
+            2>/dev/null || echo "$cid (inspect failed)")"
+        echo "    $info"
+    done
+
+    if [[ "$FORCE" != true ]]; then
+        echo ""
+        echo "  These containers must be force-removed before the volumes can be deleted."
+        printf "  Proceed? [y/N] "
+        read -r orphan_confirm
+        if [[ ! "$orphan_confirm" =~ ^[Yy]$ ]]; then
+            echo "  Aborted by user — volumes left in place." >&2
+            exit 1
+        fi
+    fi
+
+    docker rm -f "${UNIQUE_ORPHANS[@]}" >/dev/null
+    echo "  Force-removed ${#UNIQUE_ORPHANS[@]} container(s)."
 else
-    echo "  No running containers found."
+    echo "  No phantom containers found on project volumes."
 fi
 
 # ---------------------------------------------------------------------------
