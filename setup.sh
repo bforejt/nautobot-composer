@@ -342,6 +342,15 @@ else
 # ---------------------------------------------------------------------------
 # Nautobot Core
 # ---------------------------------------------------------------------------
+# Deployment tier — gates destructive operations (reset.sh, load-test-data.sh,
+# restore.sh).  Allowed values: lab, staging, production.
+#   lab        — default; destructive operations proceed with normal confirms
+#   staging    — destructive operations refuse without --allow-production-destroy
+#   production — same as staging; the env-name typed prompt replaces the
+#                generic confirmation
+# Set this to 'production' once you've pivoted this deployment beyond lab use.
+NAUTOBOT_ENV=lab
+
 # Image tag for the upstream Nautobot base image.  Read at build time as
 # a docker compose build-arg.  Set or changed via 'setup.sh -v <version>'.
 NAUTOBOT_VERSION=${NAUTOBOT_IMAGE_TAG}
@@ -431,6 +440,19 @@ elif [[ -f "$ENV_FILE" ]]; then
     printf '\nNAUTOBOT_VERSION=%s\n' "$NAUTOBOT_IMAGE_TAG" >> "$ENV_FILE"
     echo "  .env: NAUTOBOT_VERSION appended (${NAUTOBOT_IMAGE_TAG})"
 fi
+
+# Backward-compat: older .env files won't have NAUTOBOT_ENV.  Append it as
+# 'lab' so destructive scripts have something to read.  Never overwrite a
+# value the user has set — they may already have NAUTOBOT_ENV=production.
+if [[ -f "$ENV_FILE" ]] && ! grep -qE '^NAUTOBOT_ENV=' "$ENV_FILE"; then
+    printf '\nNAUTOBOT_ENV=lab\n' >> "$ENV_FILE"
+    echo "  .env: NAUTOBOT_ENV appended (lab) — change to staging/production for non-lab use"
+fi
+
+# Echo the active environment tier so the user sees what they're operating on.
+CURRENT_ENV="$(grep -E '^NAUTOBOT_ENV=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' || true)"
+CURRENT_ENV="${CURRENT_ENV:-lab}"
+echo "  .env: NAUTOBOT_ENV is '${CURRENT_ENV}'"
 # If .env was just created above, NAUTOBOT_VERSION is already in it via
 # the heredoc (see [3/6]).
 

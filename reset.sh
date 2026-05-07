@@ -39,29 +39,36 @@ ALL_VOLUMES=(
 
 FORCE=false
 REBUILD=false
+ALLOW_PROD_DESTROY=false
 # Forwarded to setup.sh on --rebuild.  Empty arrays = use setup.sh defaults.
 SETUP_VERSION_ARGS=()
 SETUP_PYTHON_ARGS=()
 
 usage() {
     cat <<EOF
-Usage: $0 [--force] [--rebuild [-v VERSION] [-p PYTHON]]
+Usage: $0 [--force] [--allow-production-destroy] [--rebuild [-v VERSION] [-p PYTHON]]
 
-  --force                 Skip confirmation prompt
-  --rebuild               After reset, run 'setup.sh --build --start --wait'
-                          to bring the stack back up automatically
-  -v, --version VERSION   Nautobot version to rebuild against (passed to
-                          setup.sh).  Only valid with --rebuild.
-  -p, --python  PYTHON    Python version suffix (passed to setup.sh).
-                          Only valid with --rebuild.
-  -h, --help              Show this help message
+  --force                       Skip the standard 'type "reset" to confirm'
+                                prompt.  Has NO effect on the production
+                                env-name prompt — that one is unconditional.
+  --allow-production-destroy    Permit reset when NAUTOBOT_ENV is 'staging' or
+                                'production'.  Even with this flag, you must
+                                type the env name to confirm.  Without this
+                                flag, reset.sh refuses on non-lab tiers.
+  --rebuild                     After reset, run 'setup.sh --build --start --wait'
+                                to bring the stack back up automatically
+  -v, --version VERSION         Nautobot version to rebuild against (passed to
+                                setup.sh).  Only valid with --rebuild.
+  -p, --python  PYTHON          Python version suffix (passed to setup.sh).
+                                Only valid with --rebuild.
+  -h, --help                    Show this help message
 
 Examples:
-  ./reset.sh                              # confirm, then reset only
-  ./reset.sh --force                      # silent reset
-  ./reset.sh --force --rebuild            # silent nuke + rebuild on default version
-  ./reset.sh --rebuild -v 2.4             # confirm, then rebuild on Nautobot 2.4
-  ./reset.sh --force --rebuild -v 3.0     # silent nuke + rebuild on 3.0
+  ./reset.sh                                   # lab: confirm, then reset
+  ./reset.sh --force                           # lab: silent reset
+  ./reset.sh --force --rebuild                 # lab: silent nuke + rebuild
+  ./reset.sh --rebuild -v 2.4                  # lab: confirm, rebuild on 2.4
+  ./reset.sh --allow-production-destroy        # production: type env-name to confirm
 EOF
 }
 
@@ -73,6 +80,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --rebuild)
             REBUILD=true
+            shift
+            ;;
+        --allow-production-destroy)
+            ALLOW_PROD_DESTROY=true
             shift
             ;;
         -v|--version)
@@ -123,7 +134,72 @@ if ! command -v docker &>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
-# Confirmation
+# Read NAUTOBOT_ENV from .env (default: lab) for the environment-tier guard
+# ---------------------------------------------------------------------------
+
+NAUTOBOT_ENV_VALUE="$(grep -E '^NAUTOBOT_ENV=' "$ENV_FILE" 2>/dev/null \
+    | tail -1 \
+    | cut -d= -f2- \
+    | tr -d '"' \
+    || true)"
+NAUTOBOT_ENV_VALUE="${NAUTOBOT_ENV_VALUE:-MISSING}"
+
+case "$NAUTOBOT_ENV_VALUE" in
+    lab)
+        # Lab tier — proceed with the existing confirmation flow below.
+        ;;
+    staging|production)
+        # Non-lab tier — refuse outright unless the operator passed the
+        # explicit override flag.  No --force shortcut here on purpose.
+        if [[ "$ALLOW_PROD_DESTROY" != true ]]; then
+            echo "REFUSING: NAUTOBOT_ENV=$NAUTOBOT_ENV_VALUE — destructive operations" >&2
+            echo "  blocked by default for non-lab deployments." >&2
+            echo "" >&2
+            echo "  If you really mean to destroy this deployment:" >&2
+            echo "    1. Back up first:    ./backup.sh" >&2
+            echo "    2. Re-run with:      --allow-production-destroy" >&2
+            echo "       (you'll be prompted to type '$NAUTOBOT_ENV_VALUE' to confirm)" >&2
+            exit 1
+        fi
+        # Override given.  Replace the standard 'type "reset"' prompt with a
+        # stricter env-name prompt.  --force does NOT skip this — production
+        # destruction is never fully non-interactive by design.
+        echo "==========================================="
+        echo "  WARNING: $NAUTOBOT_ENV_VALUE TIER"
+        echo "==========================================="
+        echo ""
+        echo "All Nautobot data and the .env file will be permanently destroyed."
+        echo ""
+        printf 'Type %q to confirm: ' "$NAUTOBOT_ENV_VALUE"
+        read -r confirm
+        if [[ "$confirm" != "$NAUTOBOT_ENV_VALUE" ]]; then
+            echo "Aborted."
+            exit 0
+        fi
+        echo ""
+        # Skip the standard prompt below; the env-name prompt replaces it.
+        FORCE=true
+        ;;
+    MISSING|"")
+        echo "WARNING: NAUTOBOT_ENV not set in .env — treating as 'lab'." >&2
+        echo "  Set NAUTOBOT_ENV=lab|staging|production explicitly to silence." >&2
+        ;;
+    *)
+        echo "ERROR: NAUTOBOT_ENV='$NAUTOBOT_ENV_VALUE' is not one of lab|staging|production." >&2
+        exit 1
+        ;;
+esac
+
+# Catch the nonsensical case of --allow-production-destroy on a lab (or
+# missing) tier — the flag is only meaningful for staging/production.
+# Don't error out (it's a no-op, not a hazard), but warn so the operator
+# knows the flag had no effect.
+if [[ "$ALLOW_PROD_DESTROY" == true && "$NAUTOBOT_ENV_VALUE" != "staging" && "$NAUTOBOT_ENV_VALUE" != "production" ]]; then
+    echo "  Note: --allow-production-destroy ignored for NAUTOBOT_ENV='$NAUTOBOT_ENV_VALUE'."
+fi
+
+# ---------------------------------------------------------------------------
+# Confirmation (lab tier only — non-lab uses the env-name prompt above)
 # ---------------------------------------------------------------------------
 
 if [[ "$FORCE" != true ]]; then

@@ -122,6 +122,7 @@ All sensitive and deployment-specific values live in `.env`. See `env.example` f
 
 | Variable | Purpose |
 |----------|---------|
+| `NAUTOBOT_ENV` | Deployment tier — `lab` (default), `staging`, or `production`. Gates destructive operations (`reset.sh`, `load-test-data.sh`, `restore.sh`). See [Environment tier guard](#environment-tier-guard). |
 | `NAUTOBOT_VERSION` | Image tag for `networktocode/nautobot` (e.g. `3.1-py3.12`). Read at build time as a docker compose build-arg; set or changed via `setup.sh -v <version>`. |
 | `NAUTOBOT_SECRET_KEY` | Django secret key (required, generate unique per deployment) |
 | `NAUTOBOT_ALLOWED_HOSTS` | Comma-separated hostnames/IPs allowed to reach Nautobot |
@@ -129,6 +130,32 @@ All sensitive and deployment-specific values live in `.env`. See `env.example` f
 | `NAUTOBOT_SUPERUSER_*` | Initial admin account credentials |
 | `NAPALM_USERNAME` / `NAPALM_PASSWORD` / `NAPALM_TIMEOUT` | Device credentials for Apps that use NAPALM (Golden Config, Device Onboarding, etc.) |
 | `REDIS_MAXMEMORY` | Valkey/Redis memory cap (default: `512mb`) |
+
+### Environment tier guard
+
+`NAUTOBOT_ENV` flags how seriously the destructive scripts treat your data. Three values:
+
+| Value | What it means | Behavior of destructive scripts |
+|-------|---------------|---------------------------------|
+| `lab` (default) | Throwaway data — synthetic devices, demo content, exploration. | Scripts run with their normal "type 'reset' / 'load' / y" prompts. `--force` skips the prompt. |
+| `staging` | Pre-production with data you'd be unhappy to lose. | `reset.sh` and `load-test-data.sh` **refuse** without `--allow-production-destroy`. Even with that flag, you must type `staging` to confirm. `restore.sh` requires you to type `staging` (no override flag — you already specified the backup file). |
+| `production` | Real data. Same gating as `staging`, but the env name to type is `production`. | Same as staging. |
+
+Set this in `.env` once your deployment moves beyond lab use:
+
+```bash
+# In .env
+NAUTOBOT_ENV=production
+```
+
+Setup.sh writes `NAUTOBOT_ENV=lab` into freshly-generated `.env` files. Existing `.env` files that pre-date this feature get `NAUTOBOT_ENV=lab` appended automatically (with a warning); change it to `staging` or `production` if appropriate.
+
+The `--allow-production-destroy` flag on `reset.sh` and `load-test-data.sh` is deliberately verbose. `--force` does **not** unlock production-tier destruction — it only skips the standard confirmation prompt for lab. The two flags compose orthogonally:
+
+- `--force` answers "skip confirmation?" (lab tier only)
+- `--allow-production-destroy` answers "permitted at all?" (staging/production tier)
+
+Even with both flags, production destruction is never fully non-interactive — you always have to type the env name.
 
 ### NAPALM device credentials
 
@@ -497,6 +524,7 @@ cp docker-compose.override.prod.yml.example docker-compose.override.yml
 
 Other items the override doesn't (and shouldn't) handle for you:
 
+- **Set `NAUTOBOT_ENV=production`** in `.env` once you've pivoted beyond lab use. This locks `reset.sh` and `load-test-data.sh` behind the deliberately-verbose `--allow-production-destroy` flag and forces typed env-name confirmation for `restore.sh`. See [Environment tier guard](#environment-tier-guard).
 - **Set `NAUTOBOT_ALLOWED_HOSTS`** to your actual FQDN(s). `*` is fine for lab; not for production.
 - **Set `CSRF_TRUSTED_ORIGINS` and cookie secure flags** in `nautobot_config.py` — see [Integrating with the API](#integrating-with-the-api) for the snippet.
 - **Use strong, unique passwords** for Postgres and the superuser account. `setup.sh` generates 24-char random ones, but if you've reused or weakened them, regenerate.

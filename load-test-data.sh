@@ -45,15 +45,22 @@ NAUTOBOT_SERVICE="nautobot"
 # ---------------------------------------------------------------------------
 
 SEED="nautobot-lab"
+ALLOW_PROD_DESTROY=false
 
 usage() {
     cat <<EOF
-Usage: $0 [--seed STRING] [-h|--help]
+Usage: $0 [--seed STRING] [--allow-production-destroy] [-h|--help]
 
-  --seed STRING   Random seed for reproducible output (default: nautobot-lab).
-                  The same seed always produces the same generated dataset,
-                  but you can only load it ONCE per database.
-  -h, --help      Show this help message.
+  --seed STRING                Random seed for reproducible output
+                               (default: nautobot-lab).  The same seed always
+                               produces the same generated dataset, but you
+                               can only load it ONCE per database.
+  --allow-production-destroy   Permit loading test data when NAUTOBOT_ENV is
+                               'staging' or 'production'.  You'll be prompted
+                               to type the env name to confirm.  Without this
+                               flag, load-test-data.sh refuses on non-lab
+                               tiers.
+  -h, --help                   Show this help message.
 
 This script is intended to be run a single time, immediately after a
 fresh ./setup.sh + docker compose up -d.  Running it twice on the same
@@ -71,6 +78,10 @@ while [[ $# -gt 0 ]]; do
             fi
             SEED="$2"
             shift 2
+            ;;
+        --allow-production-destroy)
+            ALLOW_PROD_DESTROY=true
+            shift
             ;;
         -h|--help)
             usage
@@ -162,12 +173,64 @@ DB_NAME="$(grep -E '^NAUTOBOT_DB_NAME=' "$ENV_FILE" 2>/dev/null \
 DB_NAME="${DB_NAME:-nautobot}"
 
 # ---------------------------------------------------------------------------
+# Environment-tier guard
+# ---------------------------------------------------------------------------
+# Loading synthetic test data on top of real production data is silently
+# catastrophic.  Refuse outright on non-lab tiers unless the operator
+# explicitly opts in with --allow-production-destroy.
+
+NAUTOBOT_ENV_VALUE="$(grep -E '^NAUTOBOT_ENV=' "$ENV_FILE" 2>/dev/null \
+    | tail -1 \
+    | cut -d= -f2- \
+    | tr -d '"' \
+    || true)"
+NAUTOBOT_ENV_VALUE="${NAUTOBOT_ENV_VALUE:-MISSING}"
+
+case "$NAUTOBOT_ENV_VALUE" in
+    lab)
+        # Lab tier — proceed with the existing 'load' confirmation flow.
+        USE_ENV_NAME_PROMPT=false
+        ;;
+    staging|production)
+        if [[ "$ALLOW_PROD_DESTROY" != true ]]; then
+            echo "REFUSING: NAUTOBOT_ENV=$NAUTOBOT_ENV_VALUE — load-test-data.sh" >&2
+            echo "  generates synthetic data over the existing database." >&2
+            echo "  If this DB has real data, generated rows will collide with" >&2
+            echo "  it and corrupt your deployment." >&2
+            echo "" >&2
+            echo "  If you really mean to load test data on this deployment:" >&2
+            echo "    1. Back up first:    ./backup.sh" >&2
+            echo "    2. Re-run with:      --allow-production-destroy" >&2
+            echo "       (you'll be prompted to type '$NAUTOBOT_ENV_VALUE' to confirm)" >&2
+            exit 1
+        fi
+        USE_ENV_NAME_PROMPT=true
+        ;;
+    MISSING|"")
+        echo "WARNING: NAUTOBOT_ENV not set in .env — treating as 'lab'." >&2
+        echo "  Set NAUTOBOT_ENV=lab|staging|production explicitly to silence." >&2
+        USE_ENV_NAME_PROMPT=false
+        if [[ "$ALLOW_PROD_DESTROY" == true ]]; then
+            echo "  Note: --allow-production-destroy ignored for missing NAUTOBOT_ENV."
+        fi
+        ;;
+    *)
+        echo "ERROR: NAUTOBOT_ENV='$NAUTOBOT_ENV_VALUE' is not one of lab|staging|production." >&2
+        exit 1
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Confirmation
 # ---------------------------------------------------------------------------
 
 echo ""
 echo "========================================"
-echo "  NAUTOBOT TEST DATA LOAD"
+if [[ "$USE_ENV_NAME_PROMPT" == true ]]; then
+    echo "  WARNING: ${NAUTOBOT_ENV_VALUE} TIER — TEST DATA LOAD"
+else
+    echo "  NAUTOBOT TEST DATA LOAD"
+fi
 echo "========================================"
 echo ""
 echo "About to populate the database with synthetic test data:"
@@ -175,6 +238,7 @@ echo "  Compose project:  $PROJECT_NAME"
 echo "  Database:         $DB_NAME"
 echo "  Service:          $NAUTOBOT_SERVICE"
 echo "  Seed:             $SEED"
+echo "  Environment:      $NAUTOBOT_ENV_VALUE"
 echo ""
 echo "WARNING: This is a FRESH-INSTALL OPERATION.  It must be run on a"
 echo "database that has never had test data loaded into it.  Running it"
@@ -184,10 +248,20 @@ echo ""
 echo "If this database already has data, abort now and start over with"
 echo "a fresh ./reset.sh && ./setup.sh."
 echo ""
-read -rp "Type 'load' to confirm: " confirm
-if [[ "$confirm" != "load" ]]; then
-    echo "Aborted."
-    exit 0
+
+if [[ "$USE_ENV_NAME_PROMPT" == true ]]; then
+    printf 'Type %q to confirm: ' "$NAUTOBOT_ENV_VALUE"
+    read -r confirm
+    if [[ "$confirm" != "$NAUTOBOT_ENV_VALUE" ]]; then
+        echo "Aborted."
+        exit 0
+    fi
+else
+    read -rp "Type 'load' to confirm: " confirm
+    if [[ "$confirm" != "load" ]]; then
+        echo "Aborted."
+        exit 0
+    fi
 fi
 
 # ---------------------------------------------------------------------------

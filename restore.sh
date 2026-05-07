@@ -151,23 +151,69 @@ if [[ "$RESTORE_TYPE" == "media" || "$RESTORE_TYPE" == "all" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Read NAUTOBOT_ENV from .env (default: lab) for the environment-tier guard
+# ---------------------------------------------------------------------------
+# Lighter guard than reset.sh / load-test-data.sh: no --allow-production-destroy
+# override flag, since the operator already specified the backup file.  But on
+# non-lab tiers we replace the y/N prompt with a typed-env-name prompt so
+# muscle-memory "y" doesn't trigger.
+
+ENV_FILE_PATH="${SCRIPT_DIR}/.env"
+NAUTOBOT_ENV_VALUE="$(grep -E '^NAUTOBOT_ENV=' "$ENV_FILE_PATH" 2>/dev/null \
+    | tail -1 \
+    | cut -d= -f2- \
+    | tr -d '"' \
+    || true)"
+NAUTOBOT_ENV_VALUE="${NAUTOBOT_ENV_VALUE:-MISSING}"
+
+case "$NAUTOBOT_ENV_VALUE" in
+    lab)
+        USE_ENV_NAME_PROMPT=false
+        ;;
+    staging|production)
+        USE_ENV_NAME_PROMPT=true
+        ;;
+    MISSING|"")
+        echo "WARNING: NAUTOBOT_ENV not set in .env — treating as 'lab'." >&2
+        echo "  Set NAUTOBOT_ENV=lab|staging|production explicitly to silence." >&2
+        USE_ENV_NAME_PROMPT=false
+        ;;
+    *)
+        echo "ERROR: NAUTOBOT_ENV='$NAUTOBOT_ENV_VALUE' is not one of lab|staging|production." >&2
+        exit 1
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Confirmation
 # ---------------------------------------------------------------------------
 echo "Nautobot Restore"
 echo ""
 if [[ "$RESTORE_TYPE" == "db" || "$RESTORE_TYPE" == "all" ]]; then
-    echo "  Database: ${DB_FILE}"
+    echo "  Database:    ${DB_FILE}"
 fi
 if [[ "$RESTORE_TYPE" == "media" || "$RESTORE_TYPE" == "all" ]]; then
-    echo "  Media:    ${MEDIA_FILE}"
+    echo "  Media:       ${MEDIA_FILE}"
 fi
+echo "  Environment: ${NAUTOBOT_ENV_VALUE}"
 echo ""
 echo "WARNING: This will overwrite current data. This cannot be undone."
-printf "Continue? [y/N] "
-read -r CONFIRM
-if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-    echo "Aborted."
-    exit 0
+echo ""
+
+if [[ "$USE_ENV_NAME_PROMPT" == true ]]; then
+    printf 'Type %q to confirm restore on the %s tier: ' "$NAUTOBOT_ENV_VALUE" "$NAUTOBOT_ENV_VALUE"
+    read -r CONFIRM
+    if [[ "$CONFIRM" != "$NAUTOBOT_ENV_VALUE" ]]; then
+        echo "Aborted."
+        exit 0
+    fi
+else
+    printf "Continue? [y/N] "
+    read -r CONFIRM
+    if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+        echo "Aborted."
+        exit 0
+    fi
 fi
 echo ""
 
