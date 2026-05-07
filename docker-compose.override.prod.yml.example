@@ -1,0 +1,116 @@
+---
+# Example docker-compose.override.yml for a production-ish deployment.
+#
+# Copy this file to `docker-compose.override.yml` (which is gitignored)
+# and edit for your environment.  Compose automatically merges
+# docker-compose.override.yml on top of docker-compose.yml, so changes
+# here are layered without touching the base file.
+#
+# What this override does:
+#
+#   1. Adds a Caddy reverse-proxy service in front of Nautobot, with
+#      automatic Let's Encrypt TLS.  Public ports become 80/443 on the
+#      Caddy container; the Nautobot container's own ports bind only
+#      to 127.0.0.1.
+#   2. Sets memory limits on every service so a runaway job can't OOM
+#      the host.
+#   3. Disables Nautobot's own self-signed HTTPS port (8443) — Caddy
+#      handles TLS termination instead.
+#
+# What you MUST change before using:
+#
+#   - In Caddyfile (referenced below): replace `nautobot.example.com`
+#     with your actual FQDN, and set `tls your-email@example.com` to a
+#     real address Let's Encrypt will use for renewal notices.
+#   - In .env: set NAUTOBOT_ALLOWED_HOSTS to your FQDN and add
+#     CSRF_TRUSTED_ORIGINS=https://your.fqdn (and matching CORS_*
+#     settings if you have a separate API consumer on a different
+#     origin — see README "Integrating with Nautobot's API").
+#
+# What this DOESN'T cover (left for you to design):
+#
+#   - Backup destination beyond the local ./backups/ dir.  For
+#     production, point backup.sh's --dir at a path that's
+#     replicated/snapshotted/uploaded by your existing backup tooling.
+#   - External managed Postgres (RDS, Cloud SQL).  Drop the `db`
+#     service entirely and point NAUTOBOT_DB_HOST at the external
+#     hostname.
+#   - External managed Valkey/Redis (ElastiCache, Memorystore).  Same
+#     idea — drop the `redis` service and point NAUTOBOT_REDIS_HOST
+#     externally.
+#   - Authentication beyond local users.  Nautobot supports SSO/OIDC,
+#     LDAP, and SAML via nautobot_config.py settings — uncomment the
+#     CSRF/cookie lines there once you're behind TLS.
+
+services:
+  # ---------------------------------------------------------------------------
+  # Caddy reverse proxy with automatic Let's Encrypt TLS.
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    container_name: nautobot-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      nautobot:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Override Nautobot's port binding so it's only reachable from Caddy
+  # (which shares the Compose network).  Resource cap added.
+  # ---------------------------------------------------------------------------
+  nautobot:
+    ports: !override
+      - "127.0.0.1:8080:8080"
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  celery_worker:
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  celery_beat:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  db:
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  redis:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+# ===========================================================================
+# Caddyfile to drop alongside this override (also gitignored).  The minimal
+# config that does what we want:
+#
+#   nautobot.example.com {
+#       tls your-email@example.com
+#       reverse_proxy nautobot:8080
+#   }
+#
+# That's it.  Caddy handles TLS issuance, renewal, HTTP→HTTPS redirect,
+# and HSTS automatically.  The Compose network resolves `nautobot:8080`
+# to the upstream container.
+# ===========================================================================

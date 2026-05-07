@@ -55,6 +55,7 @@ Nautobot will be available at:
 ```
 nautobot-composer/
 ├── docker-compose.yml        # Service definitions (5 containers, +1 opt-in GitLab)
+├── docker-compose.override.prod.yml.example  # Production overlay (Caddy TLS + resource limits)
 ├── Dockerfile                # Custom Nautobot image with Apps
 ├── requirements.txt          # Symlink → requirements-{major}.x.txt (set by setup.sh)
 ├── requirements-3.x.txt      # App pins for Nautobot 3.x
@@ -168,6 +169,44 @@ The file is also `COPY`ed into the image by the Dockerfile as a fallback, so rem
 | Files in `./jobs/` | `docker compose restart` |
 | `.env` | `docker compose up -d` (recreates containers with new env) |
 | `requirements.txt` / `Dockerfile` / `NAUTOBOT_VERSION` | `docker compose build && docker compose up -d` |
+
+### Integrating with the API
+
+Nautobot exposes a REST API under `/api/`, a GraphQL endpoint at `/graphql/`, and an interactive API browser at `/api/docs/`. The API token written into `.env` as `NAUTOBOT_SUPERUSER_API_TOKEN` can be used as a `Token` header right away. Rotate or replace it from **Admin → Users → API Tokens** in the UI, or generate a new one with `docker compose exec nautobot nautobot-server drf_create_token <username>`.
+
+```bash
+# Pull the auto-generated token out of .env
+TOKEN="$(grep '^NAUTOBOT_SUPERUSER_API_TOKEN=' .env | cut -d= -f2)"
+
+# REST: list devices
+curl -fsS -H "Authorization: Token ${TOKEN}" \
+     -H "Accept: application/json" \
+     http://localhost/api/dcim/devices/
+
+# GraphQL: same query, more flexible response shape
+curl -fsS -H "Authorization: Token ${TOKEN}" \
+     -H "Content-Type: application/json" \
+     -X POST http://localhost/graphql/ \
+     -d '{"query": "{ devices { id name status { name } } }"}'
+```
+
+**Cross-origin consumers** (e.g. an O11y dashboard or sister project running on a different host or port) need explicit allowlisting. Uncomment and set in `nautobot_config.py`:
+
+```python
+# CSRF + cookie security when behind a TLS-terminating proxy
+CSRF_TRUSTED_ORIGINS = ["https://nautobot.example.com"]
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
+
+# CORS allowlist for browser-based API consumers on a different origin
+# (requires django-cors-headers, which Nautobot ships).  Production:
+# enumerate origins explicitly rather than using CORS_ORIGIN_ALLOW_ALL.
+CORS_ALLOWED_ORIGINS = ["https://o11y.example.com"]
+```
+
+Then `docker compose restart nautobot celery_worker celery_beat` (config is bind-mounted; no rebuild needed).
+
+**Webhooks** are how you drive change-based integrations — e.g. "when a Device is created in Nautobot, push the matching config into the O11y stack." Configure receivers under **Extensibility → Webhooks** in the UI; payloads include the model, action, pre/post snapshots, and a signed signature. See the [Nautobot Webhooks docs](https://docs.nautobot.com/projects/core/en/stable/user-guide/platform-functionality/webhooks/) for the full format and signature verification.
 
 ## Operations
 
@@ -347,40 +386,122 @@ The first boot takes several minutes while GitLab runs its internal configuratio
 docker exec nautobot-gitlab grep 'Password:' /etc/gitlab/initial_root_password
 ```
 
+## Troubleshooting
+
+Issues that have come up enough to be worth documenting. Each entry says what you'll see, why it happens, and how to recover.
+
+### `docker compose build` fails with "NAUTOBOT_VERSION is not set"
+
+You ran `docker compose build` (or `up`) without first running `setup.sh`. Compose's `:?` guard refuses to interpolate an empty version tag.
+
+**Fix:** `./setup.sh` (or `./setup.sh -v <version>` if you want a specific Nautobot release) generates `.env` with the right variable. Then `docker compose build` works.
+
+### `docker compose ps` shows nautobot stuck in "health: starting" for several minutes
+
+Expected on first boot. Nautobot runs migrations for every installed App on startup, which can take 5-15 minutes the first time depending on App count and host performance. The `start_period: 900s` in the compose healthcheck is sized for this. Watch progress with `docker compose logs -f nautobot`.
+
+If it's been more than 20 minutes, see the next item.
+
+### `nautobot reported unhealthy` after a long start
+
+Migration crashed. Look at the recent log lines:
+
+```bash
+docker compose logs --tail 200 nautobot
+```
+
+Common causes:
+
+- **App migration error** (a particular App's schema change failed against your existing DB). Roll the App back in `requirements-{major}.x.txt`, rebuild, restart. If you can't recover, `./reset.sh` is the nuclear option.
+- **DB connection failure** mid-migration (the db container went unhealthy). Check `docker compose logs db` for OOM or disk-full conditions.
+
+### `./load-test-data.sh` fails with unique-constraint errors
+
+The script is **fresh-install only** by design — the seed produces deterministic IDs, so a second run on the same DB collides on the first table. Recovery from a partial run requires a clean DB:
+
+```bash
+./reset.sh
+./setup.sh --build --start --wait
+./load-test-data.sh
+```
+
+`load-test-data.sh` already prunes the known-orphan content-types from the nautobot-ssot 4.2.2 upstream bug before invoking `generate_test_data`. If you hit a *new* orphan-content-type pattern (different table name in a `ProgrammingError` or `AttributeError`), the workaround scaffold is in [`load-test-data.sh`](load-test-data.sh)'s phase `[2/4]` — extend it there.
+
+### "I edited `nautobot_config.py` and nothing changed"
+
+The config is bind-mounted, so Nautobot doesn't auto-reload it. After any edit:
+
+```bash
+docker compose restart nautobot celery_worker celery_beat
+```
+
+No rebuild needed.
+
+### "I edited `requirements.txt` and rebuilt but my changes were ignored"
+
+`requirements.txt` is a symlink to `requirements-{major}.x.txt` (set by `setup.sh`). Edit the *target* file (e.g. `requirements-3.x.txt`) and then rebuild:
+
+```bash
+vim requirements-3.x.txt
+docker compose build
+docker compose up -d
+```
+
+### GitLab won't start — port 8080 / 8443 / 2222 already in use
+
+The GitLab opt-in profile binds 8080 (HTTP), 8443 (HTTPS), and 2222 (SSH) on the host. If something else on the host is using one of those, GitLab fails to start.
+
+**Fix:** stop the other service, or edit the `gitlab.ports` in `docker-compose.yml` to bind to different host ports (e.g. `"18080:80"`).
+
+### Linux only: jobs in `./jobs/` aren't visible to Nautobot, or "Permission denied"
+
+Bind-mounted files take the host UID/GID on Linux. The container's nautobot user is UID/GID 999. If your host UID is different, the container can't read your job files.
+
+**Fix:** `sudo chown -R 999:999 ./jobs` (this is what `setup.sh` does on the directory itself, but new files you `git pull` or `cp` in keep their host ownership until you re-chown).
+
+### Postgres won't start after pulling project updates
+
+The image tag bumped a major version (e.g. 16 → 17). Postgres data volumes aren't compatible across major versions. See the [Upgrade PostgreSQL (major version)](#upgrade-postgresql-major-version) section above for the dump-and-restore procedure.
+
+### "How do I see what version of Nautobot is running?"
+
+```bash
+docker compose exec nautobot nautobot-server version
+```
+
+Or check `.env`'s `NAUTOBOT_VERSION` line for the image tag in use.
+
+### "I lost the admin password / API token"
+
+Both are in `.env` (file mode 0600). If `.env` is also gone:
+
+```bash
+docker compose exec nautobot nautobot-server changepassword admin
+docker compose exec nautobot nautobot-server drf_create_token admin
+```
+
 ## Production Considerations
 
-- Replace the self-signed TLS cert with a proper certificate (or terminate TLS at a reverse proxy).
-- Set `NAUTOBOT_ALLOWED_HOSTS` to your actual FQDN(s).
-- Use strong, unique passwords for PostgreSQL and the superuser account.
-- Place a reverse proxy (nginx, Caddy, Traefik) in front for TLS termination and rate limiting.
-- Back up PostgreSQL regularly — see [Backup & Restore](#backup--restore).
-- Consider an external managed Valkey/Redis service (Amazon MemoryDB/ElastiCache, Google Memorystore for Valkey, etc.) for HA deployments.
-- **Set resource limits.** The defaults intentionally have no memory or CPU caps so lab environments can use whatever the host has available. For production, add `deploy.resources.limits` to each service in `docker-compose.yml` (or a `docker-compose.override.yml`) to prevent a runaway job from OOMing the host. A reasonable starting point:
+The repository ships [`docker-compose.override.prod.yml.example`](docker-compose.override.prod.yml.example) — copy it to `docker-compose.override.yml` (already gitignored), edit for your environment, and Compose will merge it on top of `docker-compose.yml` automatically. The example layers in:
 
-   ```yaml
-   # In a docker-compose.override.yml — starting point, tune to your load
-   services:
-     nautobot:
-       deploy:
-         resources:
-           limits:
-             memory: 4G
-     celery_worker:
-       deploy:
-         resources:
-           limits:
-             memory: 4G
-     db:
-       deploy:
-         resources:
-           limits:
-             memory: 2G
-     redis:
-       deploy:
-         resources:
-           limits:
-             memory: 1G
-   ```
+- **A Caddy reverse proxy** with automatic Let's Encrypt TLS — public 80/443 land on Caddy, Nautobot's own port binds only to localhost.
+- **Memory limits** on every service so a runaway job can't OOM the host.
+- **Notes** on what's deliberately left for you to wire up: external backup destination, managed Postgres/Valkey, SSO/LDAP/SAML auth.
+
+```bash
+cp docker-compose.override.prod.yml.example docker-compose.override.yml
+# Edit docker-compose.override.yml + create a Caddyfile alongside it (both gitignored).
+# Then update .env for production and bring the stack up:
+./setup.sh -v 3.1 --build --start --wait
+```
+
+Other items the override doesn't (and shouldn't) handle for you:
+
+- **Set `NAUTOBOT_ALLOWED_HOSTS`** to your actual FQDN(s). `*` is fine for lab; not for production.
+- **Set `CSRF_TRUSTED_ORIGINS` and cookie secure flags** in `nautobot_config.py` — see [Integrating with the API](#integrating-with-the-api) for the snippet.
+- **Use strong, unique passwords** for Postgres and the superuser account. `setup.sh` generates 24-char random ones, but if you've reused or weakened them, regenerate.
+- **Back up Postgres and media regularly** — `./backup.sh` writes to `./backups/` by default; point `--dir` at a path your existing backup tooling replicates/snapshots/uploads.
+- **Consider managed Postgres and Valkey** (RDS/Cloud SQL, ElastiCache/Memorystore) for HA deployments — drop the matching service from compose and point `NAUTOBOT_DB_HOST` / `NAUTOBOT_REDIS_HOST` externally.
 
 - **Container log rotation is already configured** (`max-size: 10m`, `max-file: 5` per service). Increase the retention in `docker-compose.yml`'s `x-default-logging` anchor if you don't have an external log aggregator.
 
