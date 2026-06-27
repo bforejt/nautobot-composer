@@ -12,6 +12,8 @@ Production-ready Docker Compose deployment for [Nautobot 3.x](https://docs.nauto
 | **PostgreSQL 17** | `postgres:17-alpine` | Primary relational database |
 | **Valkey 8** | `valkey/valkey:8-alpine` | Caching, Celery broker, and lock backend (BSD-licensed Redis fork) |
 | **GitLab CE** | `gitlab/gitlab-ce:latest` | Git repository server for config backups (opt-in) |
+| **Filebrowser** | `filebrowser/filebrowser:v2.63.17` | Authenticated web UI to upload/manage firmware images (opt-in — [Firmware Server](#firmware-server-optional)) |
+| **nginx** | Custom (based on `nginx:1.27-alpine`) | Read-only, network-restricted device-download endpoint for firmware (opt-in) |
 
 ## Prerequisites
 
@@ -54,8 +56,11 @@ Nautobot will be available at:
 
 ```
 nautobot-composer/
-├── docker-compose.yml        # Service definitions (5 containers, +1 opt-in GitLab)
+├── docker-compose.yml        # Service definitions (5 core services; opt-in GitLab + firmware profiles)
 ├── docker-compose.override.prod.yml.example  # Production overlay (Caddy TLS + resource limits)
+├── firmware/                 # Firmware server config (profile: firmware)
+│   ├── nginx/                #   Dockerfile, server template, first-run cert/allow-list scripts
+│   └── certs/                #   TLS material (generated/real; gitignored)
 ├── Dockerfile                # Custom Nautobot image with Apps
 ├── requirements.txt          # Symlink → requirements-{major}.x.txt (set by setup.sh)
 ├── requirements-3.x.txt      # App pins for Nautobot 3.x
@@ -375,6 +380,8 @@ Fresh installations via `./setup.sh` on a new host are unaffected — they just 
 | `gitlab_config` | `/etc/gitlab` | GitLab configuration (opt-in) |
 | `gitlab_logs` | `/var/log/gitlab` | GitLab logs (opt-in) |
 | `gitlab_data` | `/var/opt/gitlab` | GitLab repositories and data (opt-in) |
+| `nautobot_firmware` | `/srv` | Firmware images — shared by the Filebrowser UI (read-write) and the nginx download endpoint (read-only). Opt-in |
+| `nautobot_firmware_db` | `/database` | Filebrowser's user/settings database, kept off the shared volume so it is never served. Opt-in |
 
 ## Custom Jobs
 
@@ -412,6 +419,127 @@ The first boot takes several minutes while GitLab runs its internal configuratio
 ```bash
 docker exec nautobot-gitlab grep 'Password:' /etc/gitlab/initial_root_password
 ```
+
+## Firmware Server (Optional)
+
+A self-hosted file host for **network-device firmware images**, living alongside Nautobot. It exists because Nautobot core only stores firmware *metadata* (`dcim.SoftwareImageFile`: filename, checksum, size, `download_url`) — it does not host the binaries. The device pulls its own image from a URL during an upgrade (e.g. the Cisco IOS-XE `copy` RPC over `https`/`http`/`scp`/`ftp`/`tftp`), so something has to actually serve the file. That's this.
+
+It is two small services sharing **one persistent volume**, gated behind the `firmware` [Compose profile](https://docs.docker.com/compose/how-tos/profiles/) (it does not start by default — exactly like the [GitLab](#gitlab-optional) profile, and the default `docker compose up` is unchanged):
+
+| Service | Container | Role | Auth |
+|---------|-----------|------|------|
+| `firmware-filebrowser` | `nautobot-firmware-filebrowser` | [Filebrowser](https://filebrowser.org/) web UI — upload, download, rename, move, delete, make folders | **Authenticated** (admin user from `.env`) |
+| `firmware-download` | `nautobot-firmware-download` | Read-only nginx that serves the *same* files to devices at stable URLs | **Unauthenticated**, restricted by network/ACL |
+
+A file you upload in the UI is **immediately** downloadable by a device — both services mount the same `nautobot_firmware` volume (the UI read-write, nginx read-only). The download endpoint has directory listing **off**, serves everything as `application/octet-stream`, supports `HEAD` with a correct `Content-Length`, and streams large (~2 GB) images. Cisco's canonical filenames are preserved, so the URL matches the filename.
+
+### Start it
+
+```bash
+# Enable the "firmware" profile (it doesn't start by default).  The first start
+# builds a small nginx image (nginx:1.27-alpine + openssl + the first-run helper
+# scripts baked in — see firmware/nginx/Dockerfile); add --build to rebuild it
+# after editing a helper script.  The core services are unprofiled, so this also
+# leaves your already-running Nautobot stack as-is.
+docker compose --profile firmware up -d
+
+# Tip: export this once per shell so every `docker compose` command includes the
+# profile (`ps`, `logs`, etc.) without retyping --profile.
+export COMPOSE_PROFILES=firmware
+docker compose ps
+```
+
+The two services join the same Compose network as Nautobot, so the Celery worker can reach the download endpoint when it validates registered images (see [Register in Nautobot](#register-an-image-in-nautobot)).
+
+> **`reset.sh` interaction:** like the GitLab profile, `reset.sh` does not manage the opt-in firmware services — a reset won't stop the firmware containers or remove the `nautobot_firmware*` volumes (your uploaded images survive). To remove just the firmware services yourself while leaving the rest of the stack running, use `docker compose --profile firmware rm -sf firmware-filebrowser firmware-download`; to also wipe the stored firmware, add `docker volume rm <project>_nautobot_firmware <project>_nautobot_firmware_db` (the project prefix defaults to the directory name, e.g. `nautobot-composer`).
+
+### Log in and upload
+
+1. Open the management UI: **`http://localhost:8088`** (or `http://<FIRMWARE_BIND_ADDRESS>:<FIRMWARE_FILEBROWSER_PORT>`).
+2. Log in with the admin credentials. `setup.sh` generates the password and prints it (look for *"Firmware server UI admin"*); it is stored in `.env` as `FIRMWARE_ADMIN_PASSWORD`. Retrieve it any time with:
+   ```bash
+   grep -E '^FIRMWARE_ADMIN_(USER|PASSWORD)=' .env
+   ```
+3. Upload your `.bin` (drag-and-drop or the upload button). Keep the canonical Cisco name, e.g. `cat9k_iosxe.17.09.04.SPA.bin`.
+
+Files are stored in the `nautobot_firmware` Docker volume and persist across restarts.
+
+### Device download URL
+
+Uploaded files are served at a stable, predictable, credential-free path:
+
+```
+https://<host>:<FIRMWARE_HTTPS_PORT>/images/<filename>     # e.g. https://fw.lab.example.com:9443/images/cat9k_iosxe.17.09.04.SPA.bin
+http://<host>:<FIRMWARE_HTTP_PORT>/images/<filename>       # HTTP fallback, e.g. on a locked-down mgmt VLAN
+```
+
+With the defaults: `https://localhost:9443/images/<filename>` and `http://localhost:9080/images/<filename>`. A file in a subfolder is served at `/images/<subfolder>/<filename>`. Requesting a folder returns `403` (listing is off), and only `GET`/`HEAD` are allowed.
+
+Verify a file is downloadable (the `-k` skips the self-signed cert check):
+
+```bash
+curl -kI https://localhost:9443/images/cat9k_iosxe.17.09.04.SPA.bin
+# HTTP/2 200
+# content-type: application/octet-stream
+# content-length: 26214400
+# accept-ranges: bytes
+```
+
+### Configuration
+
+All tunables live in `.env` (documented in `env.example`). Defaults are chosen to not collide with the rest of the stack:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `FIRMWARE_BIND_ADDRESS` | `0.0.0.0` | Host interface all firmware ports bind to. Set to a management-interface IP to expose only there. |
+| `FIRMWARE_FILEBROWSER_PORT` | `8088` | Host port for the authenticated management UI. |
+| `FIRMWARE_HTTPS_PORT` | `9443` | Host port for the device HTTPS download endpoint. |
+| `FIRMWARE_HTTP_PORT` | `9080` | Host port for the device HTTP fallback. |
+| `FIRMWARE_SERVER_NAME` | `localhost` | Hostname/IP in device URLs and the self-signed cert's CN/SAN. Must resolve from devices **and** the Nautobot worker. |
+| `FIRMWARE_ALLOWED_CIDRS` | `0.0.0.0/0` | Comma/space-separated CIDRs allowed to pull from the device endpoint (nginx `allow`/`deny`). |
+| `FIRMWARE_ADMIN_USER` | `admin` | Filebrowser admin username. |
+| `FIRMWARE_ADMIN_PASSWORD` | *(generated)* | Filebrowser admin password. Generated by `setup.sh`; never hard-coded in compose. |
+
+After changing any of these, re-create the affected service:
+
+```bash
+docker compose --profile firmware up -d firmware-download firmware-filebrowser
+```
+
+### Restricting source networks
+
+The device endpoint is unauthenticated, so **network restriction is the access control**. There are two layers, and you should use both:
+
+1. **nginx `allow`/`deny`** — set `FIRMWARE_ALLOWED_CIDRS` to your device-management subnet(s):
+   ```bash
+   # In .env
+   FIRMWARE_ALLOWED_CIDRS=10.20.30.0/24,10.20.40.0/24
+   ```
+   This is rendered into the nginx config at container start (one `allow` per CIDR, then `deny all`).
+
+2. **Bind address / host firewall** — because Docker's published-port NAT can rewrite the client source IP (notably with `userland-proxy` enabled, and **always** on Docker Desktop), nginx may see every external client as the Docker gateway, which defeats `allow`/`deny`. The authoritative controls are therefore:
+   - Set `FIRMWARE_BIND_ADDRESS` to a specific management-interface IP so the host only accepts the connection on that interface, and/or
+   - Restrict the ports at your host firewall / VLAN ACL / security group, and/or
+   - On Linux, set `"userland-proxy": false` in `/etc/docker/daemon.json` so nginx sees real client IPs and `allow`/`deny` works as written.
+
+> Don't make the management UI unauthenticated to simplify things — keep `firmware-download` for devices and `firmware-filebrowser` (behind a login) for humans.
+
+### TLS
+
+IOS-XE `copy https:` **validates the server certificate against the device's trustpoints**, so:
+
+- **Out of the box**, the `firmware-download` container auto-generates a **self-signed** cert for `FIRMWARE_SERVER_NAME` on first start (written to `./firmware/certs/`, gitignored). This is fine for testing with `curl -k`, but devices will reject it.
+- **For real device pulls**, drop a certificate your devices trust into `./firmware/certs/` as `server.crt` (leaf + intermediates) and `server.key` (unencrypted), then restart `firmware-download`. The auto-generator leaves existing files untouched.
+- **Or** use the **HTTP** endpoint (`FIRMWARE_HTTP_PORT`) on a locked-down management VLAN, where TLS trust isn't practical.
+
+### Register an image in Nautobot
+
+This server only hosts the file; you still tell Nautobot about it. The URL you serve **is** the value Nautobot hands to the device. Two ways:
+
+- **Manually:** in Nautobot, create/edit a **Device Software Image File** (`dcim.SoftwareImageFile`) and set **`download_url`** to the file's URL, e.g. `https://fw.lab.example.com:9443/images/cat9k_iosxe.17.09.04.SPA.bin` (plus its checksum and size).
+- **Via the job:** run the **"Register IOS-XE Image"** job (from the companion *nautobot-upgrades* repo) with that same URL — it records the `SoftwareImageFile` by URL.
+
+The Register job validates the image **from the Celery worker**, so the URL must be reachable from the worker as well as from the device. The worker can always reach the download service directly on the Compose network (`http://firmware-download/images/<filename>`); if you store a host-based URL instead, make sure the worker container can route to that host/port (on Docker Desktop, that's `host.docker.internal`).
 
 ## Troubleshooting
 
@@ -479,6 +607,19 @@ docker compose up -d
 The GitLab opt-in profile binds 8080 (HTTP), 8443 (HTTPS), and 2222 (SSH) on the host. If something else on the host is using one of those, GitLab fails to start.
 
 **Fix:** stop the other service, or edit the `gitlab.ports` in `docker-compose.yml` to bind to different host ports (e.g. `"18080:80"`).
+
+### Firmware download returns `403 Forbidden`
+
+Two common causes:
+
+- **Network ACL** — the client's source IP isn't in `FIRMWARE_ALLOWED_CIDRS`, or Docker's NAT is masking the real source IP (see [Restricting source networks](#restricting-source-networks)). Confirm what nginx rendered: `docker exec nautobot-firmware-download cat /etc/nginx/firmware/allow.conf`.
+- **Listing a folder** — requesting `/images/` or any directory returns `403` by design (directory listing is off). Request the full file path instead.
+
+If a *brand-new* upload 403s only over the download endpoint but the file shows in the UI, the file may not be world-readable. The bootstrap sets Filebrowser's file/dir modes to `0644`/`0755` for exactly this reason (the nginx worker runs as a different uid); a file created some other way can be fixed with `docker exec nautobot-firmware-filebrowser chmod 644 "/srv/<file>"`.
+
+### Firmware server ports already in use (`8088` / `9443` / `9080`)
+
+Another process holds one of the firmware host ports. Change the offending `FIRMWARE_*_PORT` in `.env` and re-run the `up` command, or set `FIRMWARE_BIND_ADDRESS` to a specific interface IP so the bind is narrower.
 
 ### Linux only: jobs in `./jobs/` aren't visible to Nautobot, or "Permission denied"
 

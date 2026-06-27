@@ -1,0 +1,86 @@
+# ---------------------------------------------------------------------------
+# Firmware device-download server — read-only, unauthenticated, network-restricted
+#
+# Rendered at container start by the official nginx entrypoint
+# (20-envsubst-on-templates.sh).  Only ${FIRMWARE_*} placeholders are
+# substituted because the compose file sets NGINX_ENVSUBST_FILTER=^FIRMWARE_ ,
+# which keeps nginx runtime variables like $host and $uri intact.
+#
+# Devices pull firmware over HTTP/HTTPS at stable, predictable URLs:
+#     https://<host>:<FIRMWARE_HTTPS_PORT>/images/<filename>
+#     http://<host>:<FIRMWARE_HTTP_PORT>/images/<filename>
+#
+# The filename in the URL is exactly the filename uploaded via the management
+# UI (e.g. cat9k_iosxe.17.09.04.SPA.bin), so the URL stored in Nautobot's
+# SoftwareImageFile.download_url is stable and human-readable.
+# ---------------------------------------------------------------------------
+
+server {
+    listen      80;
+    listen      443 ssl;
+    http2       on;
+    server_name ${FIRMWARE_SERVER_NAME};
+
+    # TLS.  A self-signed cert is auto-generated on first start
+    # (10-gen-selfsigned.sh) if none is mounted.  Replace the files in
+    # ./firmware/certs/ with a CA-issued cert your devices trust for
+    # production IOS-XE `copy https:` pulls (the device validates the server
+    # certificate against its trustpoints).
+    ssl_certificate     /etc/nginx/certs/server.crt;
+    ssl_certificate_key /etc/nginx/certs/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:SSL:1m;
+
+    # Don't advertise the nginx version.
+    server_tokens off;
+
+    # Stream large (~2 GB) firmware images efficiently.
+    sendfile           on;
+    tcp_nopush         on;
+    sendfile_max_chunk 2m;
+
+    # Defense-in-depth: never serve hidden/dot files (e.g. a stray .htpasswd or
+    # editor backup an engineer accidentally creates in /srv), even though the
+    # Filebrowser DB is deliberately kept on a separate volume.
+    location ~ /\. {
+        deny all;
+    }
+
+    # Internal liveness probe — used by the container healthcheck only.
+    # Restricted to loopback so it leaks nothing to the network.
+    location = /healthz {
+        allow 127.0.0.1;
+        allow ::1;
+        deny  all;
+        access_log   off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # The stable, predictable device-download path.  Maps
+    # /images/<path> -> /srv/<path> (the shared firmware volume).
+    location /images/ {
+        alias /srv/;
+
+        # Force every object to download as a binary blob regardless of its
+        # filename extension, and return a correct Content-Length on GET/HEAD
+        # (nginx does this automatically for static files).
+        types        { }
+        default_type application/octet-stream;
+
+        # Network restriction (allow/deny) rendered from FIRMWARE_ALLOWED_CIDRS
+        # by 25-render-allow.sh at container start.
+        include /etc/nginx/firmware/allow.conf;
+
+        # Read-only endpoint — reject anything that could mutate files.
+        limit_except GET HEAD { deny all; }
+
+        # Directory listing OFF: requesting a folder returns 403, not an index.
+        autoindex off;
+    }
+
+    # Nothing outside /images/ is part of the device-download contract.
+    location / {
+        return 404;
+    }
+}

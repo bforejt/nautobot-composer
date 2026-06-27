@@ -2,10 +2,11 @@
 # =============================================================================
 # reset.sh — Fully reset the Nautobot Docker Compose project
 #
-# Stops all containers, removes external volumes (including the PostgreSQL
-# database), deletes the .env file, and removes built images.
+# Stops all containers, removes ALL project volumes — the core stack plus the
+# opt-in GitLab and firmware add-ons — deletes the .env file, and removes built
+# images.
 #
-# THIS IS DESTRUCTIVE — all Nautobot data will be lost.
+# THIS IS DESTRUCTIVE — all Nautobot, GitLab, and firmware data will be lost.
 #
 # Usage:
 #   ./reset.sh            Interactive — prompts for confirmation
@@ -24,13 +25,37 @@ trap 'echo "ERROR: Script failed at line $LINENO.  Exit code: $?" >&2' ERR
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/.env"
 
-# Volume names — must match setup.sh and docker-compose.yml.
+# Compose project name — used to name Compose-managed volumes/images and to
+# scope the image cleanup below.  Mirrors setup.sh: honor COMPOSE_PROJECT_NAME
+# if set, otherwise derive it from the directory name the same way Compose does.
+# IMPORTANT: if you ran the stack with a custom COMPOSE_PROJECT_NAME, set the
+# same value when running reset.sh, or the project-prefixed (firmware) volumes
+# below won't match and will be skipped.
+PROJECT_DIR="$(basename "$SCRIPT_DIR")"
+PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(echo "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]//g')}"
+
+# Every volume the project can create, so a reset wipes the ENTIRE project.
+# Two naming schemes are in play:
+#   * external volumes (created by setup.sh) use their exact names, no prefix;
+#   * Compose-managed volumes (the firmware add-on) are project-prefixed by
+#     Compose, e.g. "<project>_nautobot_firmware".
+# The opt-in GitLab (profile: gitlab) and firmware (profile: firmware) volumes
+# are included so enabling either profile and then resetting leaves nothing
+# behind.  Volumes that don't exist are skipped (see phase [2/4]), so listing
+# ones the user never created is harmless.
 ALL_VOLUMES=(
+    # Core stack (external).  Jobs are a bind mount (./jobs), not a volume.
     "nautobot_media"
     "nautobot_git"
-    "nautobot_jobs"
     "nautobot_postgres_data"
     "nautobot_redis_data"
+    # GitLab — opt-in profile (external)
+    "gitlab_config"
+    "gitlab_logs"
+    "gitlab_data"
+    # Firmware server — opt-in profile (Compose-managed, project-prefixed)
+    "${PROJECT_NAME}_nautobot_firmware"
+    "${PROJECT_NAME}_nautobot_firmware_db"
 )
 
 # ---------------------------------------------------------------------------
@@ -289,8 +314,23 @@ else
     echo "  No phantom containers found on project volumes."
 fi
 
+# The Compose network can linger when `down` ran while opt-in profile
+# containers (gitlab/firmware) were still attached — `down` cannot remove an
+# in-use network, and the orphan sweep above removes containers but not
+# networks.  Now that all project containers are gone, remove it best-effort so
+# nothing is left behind.  Harmless if it was already removed or never created;
+# Compose recreates it on the next `up`.
+NETWORK="${PROJECT_NAME}_default"
+if docker network inspect "$NETWORK" &>/dev/null; then
+    if docker network rm "$NETWORK" &>/dev/null; then
+        echo "  Removed project network: $NETWORK"
+    else
+        echo "  Note: could not remove network $NETWORK (still in use?) — skipped."
+    fi
+fi
+
 # ---------------------------------------------------------------------------
-# Remove external volumes
+# Remove project volumes (core + opt-in GitLab/firmware)
 # ---------------------------------------------------------------------------
 
 echo ""
@@ -326,10 +366,10 @@ fi
 echo ""
 echo "[4/4] Removing built images..."
 
-# Compose-built images follow the pattern: <project>-<service>
-PROJECT_DIR="$(basename "$SCRIPT_DIR")"
-PROJECT_NAME="$(echo "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]//g')"
-
+# Compose-built images follow the pattern: <project>-<service>.  This includes
+# the firmware-download image (built from firmware/nginx/Dockerfile), which has
+# no explicit image: name and so is tagged <project>-firmware-download.
+# PROJECT_NAME is computed once at the top of this script.
 IMAGES=$(docker images --filter "reference=${PROJECT_NAME}-*" -q 2>/dev/null || true)
 if [[ -n "$IMAGES" ]]; then
     docker rmi $IMAGES 2>/dev/null || true

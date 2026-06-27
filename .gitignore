@@ -17,6 +17,10 @@ docker-compose.override.yml
 # Per-deployment artifacts referenced from docker-compose.override.prod.yml.example
 Caddyfile
 
+# Firmware server — generated/real TLS material (never commit keys or certs)
+firmware/certs/*
+!firmware/certs/.gitkeep
+
 # OS
 .DS_Store
 Thumbs.db

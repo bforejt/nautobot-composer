@@ -329,6 +329,12 @@ else
     API_TOKEN="$(generate_api_token)"
     echo "    API_TOKEN:          generated (${#API_TOKEN} chars)"
 
+    # Admin password for the optional firmware server's Filebrowser UI
+    # (the "firmware" Compose profile).  Generated up front so the add-on works
+    # without hand-editing; unused unless that compose file is included.
+    FIRMWARE_ADMIN_PASSWORD="$(generate_alphanum 24)"
+    echo "    FIRMWARE_ADMIN_PW:  generated (${#FIRMWARE_ADMIN_PASSWORD} chars)"
+
     echo "  Writing $ENV_FILE ..."
 
     cat > "$ENV_FILE" <<EOF
@@ -402,6 +408,19 @@ NAUTOBOT_SUPERUSER_API_TOKEN=${API_TOKEN}
 NAPALM_USERNAME=
 NAPALM_PASSWORD=
 NAPALM_TIMEOUT=30
+
+# ---------------------------------------------------------------------------
+# Firmware Server (optional add-on — Compose profile: firmware)
+# See env.example for documentation on each variable.
+# ---------------------------------------------------------------------------
+FIRMWARE_BIND_ADDRESS=0.0.0.0
+FIRMWARE_FILEBROWSER_PORT=8088
+FIRMWARE_HTTPS_PORT=9443
+FIRMWARE_HTTP_PORT=9080
+FIRMWARE_SERVER_NAME=localhost
+FIRMWARE_ALLOWED_CIDRS=0.0.0.0/0
+FIRMWARE_ADMIN_USER=admin
+FIRMWARE_ADMIN_PASSWORD=${FIRMWARE_ADMIN_PASSWORD}
 EOF
 
     chmod 600 "$ENV_FILE"
@@ -414,6 +433,10 @@ EOF
     echo "  Username:   admin"
     echo "  Password:   ${SUPERUSER_PASSWORD}"
     echo "  API token:  ${API_TOKEN}"
+    echo ""
+    echo "  Firmware server UI admin (only if you enable the firmware add-on):"
+    echo "  Username:   ${FIRMWARE_ADMIN_USER:-admin}"
+    echo "  Password:   ${FIRMWARE_ADMIN_PASSWORD}"
     echo "  ========================================="
     echo ""
     echo "  Save these now — they are not stored elsewhere."
@@ -447,6 +470,39 @@ fi
 if [[ -f "$ENV_FILE" ]] && ! grep -qE '^NAUTOBOT_ENV=' "$ENV_FILE"; then
     printf '\nNAUTOBOT_ENV=lab\n' >> "$ENV_FILE"
     echo "  .env: NAUTOBOT_ENV appended (lab) — change to staging/production for non-lab use"
+fi
+
+# Backward-compat: older .env files predate the optional firmware server, and a
+# hand-created .env ("cp env.example .env") ships the block but with the admin
+# password commented out.  Handle both cases without duplicating the block or
+# reverting values the user may have customised.
+if [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_BIND_ADDRESS=' "$ENV_FILE"; then
+    # No firmware block present at all — append the whole thing.
+    FW_ADMIN_PW="$(generate_alphanum 24)"
+    cat >> "$ENV_FILE" <<EOF
+
+# ---------------------------------------------------------------------------
+# Firmware Server (optional add-on — Compose profile: firmware)
+# See env.example for documentation on each variable.
+# ---------------------------------------------------------------------------
+FIRMWARE_BIND_ADDRESS=0.0.0.0
+FIRMWARE_FILEBROWSER_PORT=8088
+FIRMWARE_HTTPS_PORT=9443
+FIRMWARE_HTTP_PORT=9080
+FIRMWARE_SERVER_NAME=localhost
+FIRMWARE_ALLOWED_CIDRS=0.0.0.0/0
+FIRMWARE_ADMIN_USER=admin
+FIRMWARE_ADMIN_PASSWORD=${FW_ADMIN_PW}
+EOF
+    echo "  .env: firmware-server block appended (admin password generated)"
+    echo "        Firmware UI admin password: ${FW_ADMIN_PW}  (user: see FIRMWARE_ADMIN_USER)"
+elif [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_ADMIN_PASSWORD=' "$ENV_FILE"; then
+    # Firmware block exists but the admin password is still unset/commented —
+    # add just the active password line.
+    FW_ADMIN_PW="$(generate_alphanum 24)"
+    printf '\nFIRMWARE_ADMIN_PASSWORD=%s\n' "$FW_ADMIN_PW" >> "$ENV_FILE"
+    echo "  .env: FIRMWARE_ADMIN_PASSWORD generated and appended"
+    echo "        Firmware UI admin password: ${FW_ADMIN_PW}  (user: see FIRMWARE_ADMIN_USER)"
 fi
 
 # Echo the active environment tier so the user sees what they're operating on.
