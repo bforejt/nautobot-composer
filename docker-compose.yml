@@ -210,6 +210,109 @@ services:
       start_period: 900s
     restart: unless-stopped
 
+  # --------------------------------------------------------------------------
+  # Firmware Server — Filebrowser UI (authenticated management)  [profile: firmware]
+  # --------------------------------------------------------------------------
+  # Opt-in via the "firmware" profile — does NOT start by default.  Enable with:
+  #   docker compose --profile firmware up -d
+  # Hosts network-device firmware images: this authenticated Filebrowser UI for
+  # engineers, plus the read-only firmware-download endpoint below for devices,
+  # sharing ONE volume (nautobot_firmware).  Nautobot itself is not modified —
+  # the device-download URL is what you store in Nautobot's
+  # dcim.SoftwareImageFile.download_url (or register via the
+  # "Register IOS-XE Image" job).  Tunables live in .env (FIRMWARE_*; see
+  # env.example); config files are under ./firmware/.
+  firmware-filebrowser:
+    <<: *default-logging
+    image: filebrowser/filebrowser:v2.63.17
+    container_name: nautobot-firmware-filebrowser
+    profiles:
+      - firmware
+    # Bootstrap the admin user from env on first run only (the DB is created
+    # once and persisted in nautobot_firmware_db).  Credentials NEVER appear in
+    # this file — they come from .env via the environment block below.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        DB=/database/filebrowser.db
+        if [ ! -f "$$DB" ]; then
+          echo "firmware: initialising Filebrowser database and admin user"
+          /bin/filebrowser -d "$$DB" config init
+          # World-readable files/dirs (0644/0755) so the read-only nginx
+          # download service (which runs as a different uid) can serve them.
+          # Firmware images are public artefacts pulled unauthenticated by
+          # devices, so this is intentional, not a leak.
+          /bin/filebrowser -d "$$DB" config set --auth.method=json --root /srv --fileMode 0o644 --dirMode 0o755
+          /bin/filebrowser -d "$$DB" users add "$$FB_USERNAME" "$$FB_PASSWORD" --perm.admin
+        fi
+        exec /bin/filebrowser -d "$$DB" -r /srv -a 0.0.0.0 -p 80
+    environment:
+      FB_USERNAME: "${FIRMWARE_ADMIN_USER:-admin}"
+      FB_PASSWORD: "${FIRMWARE_ADMIN_PASSWORD:?Set FIRMWARE_ADMIN_PASSWORD in .env (see env.example)}"
+    volumes:
+      - nautobot_firmware:/srv
+      - nautobot_firmware_db:/database
+    ports:
+      # Authenticated UI.  Bind to FIRMWARE_BIND_ADDRESS (default all
+      # interfaces); restrict to a management-interface IP for tighter control.
+      - "${FIRMWARE_BIND_ADDRESS:-0.0.0.0}:${FIRMWARE_FILEBROWSER_PORT:-8088}:80"
+    healthcheck:
+      test: ["CMD", "/bin/filebrowser", "version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Firmware Server — nginx device-download endpoint (read-only)  [profile: firmware]
+  # --------------------------------------------------------------------------
+  # Serves the SAME files read-only, unauthenticated but network-restricted, at
+  # stable device URLs:  https://<host>:<FIRMWARE_HTTPS_PORT>/images/<filename>
+  # (directory listing off, application/octet-stream, GET/HEAD only, HTTP
+  # fallback on FIRMWARE_HTTP_PORT).
+  firmware-download:
+    <<: *default-logging
+    # Small custom image: nginx:1.27-alpine + openssl + the first-run helper
+    # scripts baked in (see firmware/nginx/Dockerfile for why).  No explicit
+    # image: name, so Compose tags it <project>-firmware-download (e.g.
+    # nautobot-composer-firmware-download) like the other built images — which
+    # means reset.sh's project-scoped image cleanup removes it too.  Built on
+    # first 'docker compose --profile firmware up'; rebuild with '... up --build'
+    # after editing a helper script.
+    build:
+      context: ./firmware/nginx
+      dockerfile: Dockerfile
+    container_name: nautobot-firmware-download
+    profiles:
+      - firmware
+    environment:
+      FIRMWARE_SERVER_NAME: "${FIRMWARE_SERVER_NAME:-localhost}"
+      FIRMWARE_ALLOWED_CIDRS: "${FIRMWARE_ALLOWED_CIDRS:-0.0.0.0/0}"
+      # Only substitute our own placeholders in the template; leave nginx
+      # runtime vars ($host, $uri, ...) untouched.
+      NGINX_ENVSUBST_FILTER: "^FIRMWARE_"
+    volumes:
+      # The SAME files as the UI, mounted READ-ONLY for device pulls.
+      - nautobot_firmware:/srv:ro
+      # Server template — bind-mounted so nginx config can be tweaked without a
+      # rebuild (rendered by the official entrypoint's envsubst at start).
+      - ./firmware/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      # TLS material (bind mount so a generated/real cert persists on the host).
+      - ./firmware/certs:/etc/nginx/certs
+    ports:
+      # Device-facing HTTPS and HTTP.  Bind to FIRMWARE_BIND_ADDRESS.
+      - "${FIRMWARE_BIND_ADDRESS:-0.0.0.0}:${FIRMWARE_HTTPS_PORT:-9443}:443"
+      - "${FIRMWARE_BIND_ADDRESS:-0.0.0.0}:${FIRMWARE_HTTP_PORT:-9080}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
 volumes:
   nautobot_postgres_data:
     external: true
@@ -226,3 +329,10 @@ volumes:
     external: true
   gitlab_data:
     external: true
+  # Firmware server (profile: firmware).  Compose-managed (NOT external), so
+  # these are created only when the firmware profile is selected — keeping the
+  # default stack's storage unchanged.  They survive container restarts.
+  nautobot_firmware:
+  # Filebrowser's own DB (users/settings), kept off the shared volume so it is
+  # never exposed by the download endpoint.
+  nautobot_firmware_db:

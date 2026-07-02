@@ -1,0 +1,12 @@
+# This directory is bind-mounted into the firmware-download (nginx) container
+# at /etc/nginx/certs.
+#
+# On first start, if no certificate is present here, the container generates a
+# self-signed server.crt / server.key for FIRMWARE_SERVER_NAME (see
+# ../nginx/10-gen-selfsigned.sh).  The generated files are gitignored.
+#
+# To use a certificate your network devices trust (required for IOS-XE
+# `copy https:` to validate the server), drop your PEM files here as:
+#     server.crt   (full chain: leaf + intermediates)
+#     server.key   (private key, unencrypted)
+# and restart the firmware-download service.
