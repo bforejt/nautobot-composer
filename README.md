@@ -13,7 +13,7 @@ Production-ready Docker Compose deployment for [Nautobot 3.x](https://docs.nauto
 | **Valkey 8** | `valkey/valkey:8-alpine` | Caching, Celery broker, and lock backend (BSD-licensed Redis fork) |
 | **GitLab CE** | `gitlab/gitlab-ce:latest` | Git repository server for config backups (opt-in) |
 | **Filebrowser** | `filebrowser/filebrowser:v2.63.17` | Authenticated web UI to upload/manage firmware images (opt-in — [Firmware Server](#firmware-server-optional)) |
-| **nginx** | Custom (based on `nginx:1.27-alpine`) | Read-only, network-restricted device-download endpoint for firmware (opt-in) |
+| **nginx** | Custom (based on `nginx:1.30-alpine`) | Read-only, network-restricted device-download endpoint for firmware (opt-in) |
 
 ## Prerequisites
 
@@ -502,7 +502,7 @@ docker compose up -d
 
 ```bash
 # Enable the "firmware" profile for this command only.  The first start
-# builds a small nginx image (nginx:1.27-alpine + openssl + the first-run helper
+# builds a small nginx image (nginx:1.30-alpine + openssl + the first-run helper
 # scripts baked in — see firmware/nginx/Dockerfile); add --build to rebuild it
 # after editing a helper script.  The core services are unprofiled, so this also
 # leaves your already-running Nautobot stack as-is.

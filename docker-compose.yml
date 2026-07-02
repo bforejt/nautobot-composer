@@ -284,7 +284,7 @@ services:
   # fallback on FIRMWARE_HTTP_PORT).
   firmware-download:
     <<: *default-logging
-    # Small custom image: nginx:1.27-alpine + openssl + the first-run helper
+    # Small custom image: nginx:1.30-alpine + openssl + the first-run helper
     # scripts baked in (see firmware/nginx/Dockerfile for why).  No explicit
     # image: name, so Compose tags it <project>-firmware-download (e.g.
     # nautobot-composer-firmware-download) like the other built images — which

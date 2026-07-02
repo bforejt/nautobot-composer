@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # Custom nginx image for the firmware device-download endpoint.
 #
-# Why a build instead of plain nginx:1.27-alpine:
+# Why a build instead of plain nginx:1.30-alpine:
 #   * The base image ships libssl but NOT the openssl CLI, which the first-run
 #     self-signed-cert helper needs.  Installing it at container start would
 #     require outbound network to the Alpine CDN — unavailable on exactly the
@@ -15,7 +15,7 @@
 #
 # Build context: ./firmware/nginx
 # ---------------------------------------------------------------------------
-FROM nginx:1.27-alpine
+FROM nginx:1.30-alpine
 
 # openssl CLI for first-run self-signed certificate generation.
 RUN apk add --no-cache openssl
