@@ -222,6 +222,9 @@ services:
   # dcim.SoftwareImageFile.download_url (or register via the
   # "Register IOS-XE Image" job).  Tunables live in .env (FIRMWARE_*; see
   # env.example); config files are under ./firmware/.
+  # Note: FIRMWARE_BASE_URL in .env is not consumed by these two services —
+  # it rides the shared env_file into the Nautobot containers, where the
+  # Celery worker's Register Image job uses it to build device download URLs.
   firmware-filebrowser:
     <<: *default-logging
     image: filebrowser/filebrowser:v2.63.17
