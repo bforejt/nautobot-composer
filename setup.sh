@@ -35,6 +35,9 @@ DO_WAIT=false
 # remove that profile from COMPOSE_PROFILES in .env (see [4/7]).
 PROFILE_GITLAB=""
 PROFILE_FIRMWARE=""
+# Explicit device-facing firmware base URL (--firmware-url).  Empty = derive
+# from the host's primary IP where needed (see FIRMWARE_BASE_URL handling).
+FIRMWARE_URL=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -76,6 +79,20 @@ while [[ $# -gt 0 ]]; do
             PROFILE_FIRMWARE="$new"
             shift
             ;;
+        --firmware-url)
+            FIRMWARE_URL="${2:-}"
+            if [[ ! "$FIRMWARE_URL" =~ ^https?:// ]]; then
+                echo "ERROR: --firmware-url must be a full base URL starting with http:// or https://" >&2
+                echo "       e.g. --firmware-url https://192.0.2.10:9443/images/" >&2
+                exit 1
+            fi
+            if [[ "$FIRMWARE_URL" != *"/images"* ]]; then
+                echo "WARNING: --firmware-url has no /images path — the download endpoint serves" >&2
+                echo "         files under /images/, so device URLs built from this base will 404" >&2
+                echo "         unless you have customised the nginx config." >&2
+            fi
+            shift 2
+            ;;
         --debug)
             DEBUG_MODE=true
             shift
@@ -83,7 +100,7 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             cat <<'HELP'
 Usage: ./setup.sh [-v VERSION] [-p PYTHON] [--with-gitlab] [--with-firmware]
-                  [--build] [--start] [--wait] [--debug]
+                  [--firmware-url URL] [--build] [--start] [--wait] [--debug]
 
 Options:
   -v, --version VERSION   Nautobot version (default: 3.1)
@@ -95,6 +112,13 @@ Options:
                           from .env; does not stop a running container)
       --with-firmware     Enable the firmware-server add-on (see README)
       --without-firmware  Disable the firmware-server add-on
+      --firmware-url URL  Device-facing firmware download base URL, written
+                          to .env as FIRMWARE_BASE_URL and passed through to
+                          the Nautobot worker (used by the nautobot-upgrades
+                          Register Image job to build download URLs), e.g.
+                          https://192.0.2.10:9443/images/
+                          Default: derived from the host's primary IP
+                          (routing table — never DNS or hostname)
       --build             After setup, run 'docker compose build'
       --start             After setup (and --build if given), run
                           'docker compose up -d'
@@ -117,6 +141,10 @@ Examples:
 
   # Enable the firmware server on an existing install and start it.
   ./setup.sh --with-firmware --start
+
+  # Same, but pin the device-facing download URL instead of auto-detecting
+  # the host IP (multi-homed host, or a CA-certified DNS name).
+  ./setup.sh --with-firmware --firmware-url https://192.0.2.10:9443/images/ --start
 
   # Switch to a different Nautobot version on an existing install.
   ./setup.sh -v 3.0 --build --start --wait
@@ -233,6 +261,64 @@ generate_secret_key() {
 
 generate_api_token() {
     openssl rand -hex 20 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# Helper: firmware base URL (FIRMWARE_BASE_URL)
+#
+# The firmware add-on needs an EXTERNAL, device-reachable address to build
+# the download URLs stored in Nautobot (SoftwareImageFile.download_url, via
+# the nautobot-upgrades Register Image job reading FIRMWARE_BASE_URL from
+# the worker environment).  The host's DNS name / `hostname` output is
+# deliberately NOT used: lab devices dial back by IP and rarely resolve lab
+# names.  Instead the primary IP comes from the routing table — the address
+# this host actually uses to reach the network — and --firmware-url
+# overrides it for multi-homed hosts or CA-certified DNS names.
+# ---------------------------------------------------------------------------
+
+detect_primary_ip() {
+    case "$(uname -s)" in
+        Darwin)
+            local iface
+            iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')" || true
+            [[ -n "$iface" ]] && ipconfig getifaddr "$iface" 2>/dev/null
+            ;;
+        *)
+            ip -4 route get 1.1.1.1 2>/dev/null \
+                | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}'
+            ;;
+    esac
+}
+PRIMARY_IP="$(detect_primary_ip || true)"
+
+# Host part of the --firmware-url override (for FIRMWARE_SERVER_NAME, so the
+# nginx server_name and the self-signed cert SAN match the stored URLs).
+FIRMWARE_URL_HOST=""
+if [[ -n "$FIRMWARE_URL" ]]; then
+    FIRMWARE_URL_HOST="${FIRMWARE_URL#*://}"
+    FIRMWARE_URL_HOST="${FIRMWARE_URL_HOST%%/*}"
+    FIRMWARE_URL_HOST="${FIRMWARE_URL_HOST%%:*}"
+fi
+
+# The resolved base URL for a given HTTPS port: the explicit override wins,
+# else it is built from the detected primary IP.  Empty when neither is
+# available — the Register job treats an empty FIRMWARE_BASE_URL as unset
+# and asks for a per-run URL rather than storing one devices can't reach.
+firmware_base_url_for_port() {
+    local port="$1"
+    if [[ -n "$FIRMWARE_URL" ]]; then
+        echo "$FIRMWARE_URL"
+    elif [[ -n "$PRIMARY_IP" ]]; then
+        echo "https://${PRIMARY_IP}:${port}/images/"
+    fi
+}
+
+# Replace VAR=... in .env (BSD/GNU sed compatible).  Values here are URLs,
+# IPs, and hostnames — no '|' or '&', the two characters special to this
+# sed expression.
+set_env_var() {
+    sed -i.bak "s|^$1=.*|$1=$2|" "$ENV_FILE"
+    rm -f "${ENV_FILE}.bak"
 }
 
 # ---------------------------------------------------------------------------
@@ -390,6 +476,25 @@ else
     FIRMWARE_ADMIN_PASSWORD="$(generate_alphanum 24)"
     echo "    FIRMWARE_ADMIN_PW:  generated (${#FIRMWARE_ADMIN_PASSWORD} chars)"
 
+    # Device-facing firmware URL + matching server name (cert SAN).  9443 is
+    # the FIRMWARE_HTTPS_PORT default written into the block below.
+    FW_BASE_URL="$(firmware_base_url_for_port 9443)"
+    if [[ -n "$FIRMWARE_URL_HOST" ]]; then
+        FW_SERVER_NAME="$FIRMWARE_URL_HOST"
+    elif [[ -n "$FW_BASE_URL" ]]; then
+        FW_SERVER_NAME="$PRIMARY_IP"
+    else
+        FW_SERVER_NAME="localhost"
+    fi
+    if [[ -n "$FW_BASE_URL" ]]; then
+        echo "    FIRMWARE_BASE_URL:  ${FW_BASE_URL}"
+        [[ -z "$FIRMWARE_URL" ]] && \
+            echo "                        (host primary IP auto-detected — override with --firmware-url)"
+    else
+        echo "    FIRMWARE_BASE_URL:  left empty — could not detect the host's primary IP."
+        echo "                        Set it in .env or re-run with --firmware-url <url>."
+    fi
+
     echo "  Writing $ENV_FILE ..."
 
     cat > "$ENV_FILE" <<EOF
@@ -480,10 +585,16 @@ FIRMWARE_BIND_ADDRESS=0.0.0.0
 FIRMWARE_FILEBROWSER_PORT=8088
 FIRMWARE_HTTPS_PORT=9443
 FIRMWARE_HTTP_PORT=9080
-FIRMWARE_SERVER_NAME=localhost
+FIRMWARE_SERVER_NAME=${FW_SERVER_NAME}
 FIRMWARE_ALLOWED_CIDRS=0.0.0.0/0
 FIRMWARE_ADMIN_USER=admin
 FIRMWARE_ADMIN_PASSWORD=${FIRMWARE_ADMIN_PASSWORD}
+
+# Device-facing base URL for firmware downloads — passed through this
+# env_file to the Nautobot Celery worker, where the nautobot-upgrades
+# "Register IOS-XE Image" job builds download_url as <base>/<filename>.
+# Keep the host in sync with FIRMWARE_SERVER_NAME (cert SAN / server_name).
+FIRMWARE_BASE_URL=${FW_BASE_URL}
 EOF
 
     chmod 600 "$ENV_FILE"
@@ -542,6 +653,14 @@ fi
 if [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_BIND_ADDRESS=' "$ENV_FILE"; then
     # No firmware block present at all — append the whole thing.
     FW_ADMIN_PW="$(generate_alphanum 24)"
+    FW_BASE_URL="$(firmware_base_url_for_port 9443)"
+    if [[ -n "$FIRMWARE_URL_HOST" ]]; then
+        FW_SERVER_NAME="$FIRMWARE_URL_HOST"
+    elif [[ -n "$FW_BASE_URL" ]]; then
+        FW_SERVER_NAME="$PRIMARY_IP"
+    else
+        FW_SERVER_NAME="localhost"
+    fi
     cat >> "$ENV_FILE" <<EOF
 
 # ---------------------------------------------------------------------------
@@ -552,13 +671,20 @@ FIRMWARE_BIND_ADDRESS=0.0.0.0
 FIRMWARE_FILEBROWSER_PORT=8088
 FIRMWARE_HTTPS_PORT=9443
 FIRMWARE_HTTP_PORT=9080
-FIRMWARE_SERVER_NAME=localhost
+FIRMWARE_SERVER_NAME=${FW_SERVER_NAME}
 FIRMWARE_ALLOWED_CIDRS=0.0.0.0/0
 FIRMWARE_ADMIN_USER=admin
 FIRMWARE_ADMIN_PASSWORD=${FW_ADMIN_PW}
+
+# Device-facing base URL for firmware downloads — passed through this
+# env_file to the Nautobot Celery worker, where the nautobot-upgrades
+# "Register IOS-XE Image" job builds download_url as <base>/<filename>.
+# Keep the host in sync with FIRMWARE_SERVER_NAME (cert SAN / server_name).
+FIRMWARE_BASE_URL=${FW_BASE_URL}
 EOF
     echo "  .env: firmware-server block appended (admin password generated)"
     echo "        Firmware UI admin password: ${FW_ADMIN_PW}  (user: see FIRMWARE_ADMIN_USER)"
+    echo "        FIRMWARE_BASE_URL: ${FW_BASE_URL:-<empty — set manually or re-run with --firmware-url>}"
 elif [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_ADMIN_PASSWORD=' "$ENV_FILE"; then
     # Firmware block exists but the admin password is still unset/commented —
     # add just the active password line.
@@ -566,6 +692,58 @@ elif [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_ADMIN_PASSWORD=' "$ENV_FILE";
     printf '\nFIRMWARE_ADMIN_PASSWORD=%s\n' "$FW_ADMIN_PW" >> "$ENV_FILE"
     echo "  .env: FIRMWARE_ADMIN_PASSWORD generated and appended"
     echo "        Firmware UI admin password: ${FW_ADMIN_PW}  (user: see FIRMWARE_ADMIN_USER)"
+fi
+
+# Backward-compat / override: FIRMWARE_BASE_URL — the device-facing download
+# URL, passed through .env (env_file) to the Celery worker where the
+# nautobot-upgrades "Register IOS-XE Image" job reads it.  Three cases:
+#   * line missing (block pre-dates it) — append with the resolved value
+#   * line present and --firmware-url given — update it
+#   * line present, no flag — leave the user's value alone
+FW_URL_TOUCHED=false
+if [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_BASE_URL=' "$ENV_FILE"; then
+    FW_HTTPS_PORT="$(grep -E '^FIRMWARE_HTTPS_PORT=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+    FW_BASE_URL="$(firmware_base_url_for_port "${FW_HTTPS_PORT:-9443}")"
+    cat >> "$ENV_FILE" <<EOF
+
+# Device-facing base URL for firmware downloads (see env.example) — read by
+# the Nautobot Celery worker for the nautobot-upgrades Register Image job.
+FIRMWARE_BASE_URL=${FW_BASE_URL}
+EOF
+    FW_URL_TOUCHED=true
+    if [[ -n "$FW_BASE_URL" ]]; then
+        echo "  .env: FIRMWARE_BASE_URL appended (${FW_BASE_URL})"
+        [[ -z "$FIRMWARE_URL" ]] && \
+            echo "        (host primary IP auto-detected — override with --firmware-url)"
+    else
+        echo "  .env: FIRMWARE_BASE_URL appended EMPTY — could not detect the host's primary IP."
+        echo "        Set it manually or re-run with --firmware-url <url>."
+    fi
+elif [[ -f "$ENV_FILE" && -n "$FIRMWARE_URL" ]]; then
+    set_env_var FIRMWARE_BASE_URL "$FIRMWARE_URL"
+    FW_URL_TOUCHED=true
+    echo "  .env: FIRMWARE_BASE_URL → ${FIRMWARE_URL}"
+fi
+
+# Keep FIRMWARE_SERVER_NAME (nginx server_name + self-signed cert SAN) aligned
+# with the host in FIRMWARE_BASE_URL — but only on a run that actually set the
+# URL, and never clobber a name the user customised: an explicit
+# --firmware-url always wins; auto-detection only replaces the shipped
+# default ('localhost').
+if [[ "$FW_URL_TOUCHED" == true && -f "$ENV_FILE" ]]; then
+    CURRENT_FW_NAME="$(grep -E '^FIRMWARE_SERVER_NAME=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+    NEW_FW_NAME="${FIRMWARE_URL_HOST:-$PRIMARY_IP}"
+    if [[ -n "$NEW_FW_NAME" && -n "$CURRENT_FW_NAME" && "$CURRENT_FW_NAME" != "$NEW_FW_NAME" ]] \
+        && [[ -n "$FIRMWARE_URL" || "$CURRENT_FW_NAME" == "localhost" ]]; then
+        set_env_var FIRMWARE_SERVER_NAME "$NEW_FW_NAME"
+        echo "  .env: FIRMWARE_SERVER_NAME → ${NEW_FW_NAME} (matches FIRMWARE_BASE_URL host)"
+        if [[ -s "${SCRIPT_DIR}/firmware/certs/server.crt" ]]; then
+            echo "        NOTE: an existing TLS cert is present and is NOT regenerated."
+            echo "        For a self-signed cert with the new name/IP in its SAN, remove it"
+            echo "        and restart:  rm firmware/certs/server.crt firmware/certs/server.key"
+            echo "                      docker compose --profile firmware up -d firmware-download"
+        fi
+    fi
 fi
 
 # ---------------------------------------------------------------------------
