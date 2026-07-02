@@ -223,6 +223,10 @@ ALL_VOLUMES=(
 # setup.sh just ensures the directory exists with correct ownership.
 JOBS_HOST_DIR="${SCRIPT_DIR}/jobs"
 
+# Secret files for Nautobot's built-in "text file" secrets provider,
+# bind-mounted read-only to /opt/nautobot/secrets (see secrets/README.md).
+SECRETS_HOST_DIR="${SCRIPT_DIR}/secrets"
+
 # Subdirectories Nautobot expects inside the media volume.
 MEDIA_SUBDIRS=(
     "devicetype-images"
@@ -867,6 +871,22 @@ docker run --rm \
     -v "${JOBS_HOST_DIR}:/jobs" \
     alpine chown -R "${NAUTOBOT_UID}:${NAUTOBOT_GID}" /jobs
 
+# Ensure the bind-mounted secrets/ directory exists with tight-but-usable
+# permissions: owner = the invoking host user (so 'add-secret.sh' and plain
+# editors work without sudo), group = the container GID with read-only
+# access (so the Nautobot containers can read secret files), no world
+# access.  Files: 640, directory: 750.  Ownership is applied through a
+# helper container (root inside) so no host sudo is needed — same pattern
+# as the volume chown above; on macOS/Docker Desktop it is cosmetic.
+mkdir -p "${SECRETS_HOST_DIR}"
+docker run --rm \
+    -v "${SECRETS_HOST_DIR}:/secrets" \
+    alpine sh -c "
+        chown -R ${EUID:-$(id -u)}:${NAUTOBOT_GID} /secrets
+        chmod 750 /secrets
+        find /secrets -type f -exec chmod 640 {} +
+    "
+
 echo "  Done."
 
 # ---------------------------------------------------------------------------
@@ -881,6 +901,7 @@ docker run --rm \
     -v "${MEDIA_VOLUME}:/media" \
     -v "${GIT_VOLUME}:/git" \
     -v "${JOBS_HOST_DIR}:/jobs" \
+    -v "${SECRETS_HOST_DIR}:/secrets" \
     alpine sh -c "
         echo '  ${MEDIA_VOLUME}  owner='\$(stat -c '%u:%g' /media);
         for d in /media/*/; do
@@ -888,6 +909,7 @@ docker run --rm \
         done;
         echo '  ${GIT_VOLUME}  owner='\$(stat -c '%u:%g' /git);
         echo '  ./jobs (bind mount)  owner='\$(stat -c '%u:%g' /jobs);
+        echo '  ./secrets (bind mount)  owner='\$(stat -c '%u:%g' /secrets);
     "
 
 # ---------------------------------------------------------------------------
