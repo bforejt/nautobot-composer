@@ -6,6 +6,9 @@
 #   Database: pg_dump piped through gzip  -> nautobot_db_<timestamp>.sql.gz
 #   Media:    tar of the nautobot_media volume -> nautobot_media_<timestamp>.tar.gz
 #
+# Deliberately NOT backed up: .env and ./secrets/ (plaintext credentials —
+# keep their source of truth in a password manager/vault; see secrets/README.md).
+#
 # Usage:
 #   ./backup.sh                  Back up everything (db + media)
 #   ./backup.sh -t db            Database only
