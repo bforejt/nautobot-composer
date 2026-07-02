@@ -67,7 +67,7 @@ nautobot-composer/
 ├── requirements-2.x.txt      # App pins for Nautobot 2.x
 ├── nautobot_config.py        # Nautobot application configuration
 ├── setup.sh                  # Initialization (secrets, volumes, version, optional --build/--start/--wait)
-├── reset.sh                  # Full destructive reset (containers, volumes, .env, images)
+├── reset.sh                  # Full destructive reset (containers, volumes, .env, images; --keep-* to exclude, --dry-run to preview)
 ├── backup.sh                 # Back up database and/or media files
 ├── restore.sh                # Restore database and/or media from backup
 ├── load-test-data.sh         # One-shot synthetic data loader (fresh-install only)
@@ -128,6 +128,7 @@ All sensitive and deployment-specific values live in `.env`. See `env.example` f
 | Variable | Purpose |
 |----------|---------|
 | `NAUTOBOT_ENV` | Deployment tier — `lab` (default), `staging`, or `production`. Gates destructive operations (`reset.sh`, `load-test-data.sh`, `restore.sh`). See [Environment tier guard](#environment-tier-guard). |
+| `COMPOSE_PROFILES` | Comma-separated opt-in add-ons (`gitlab`, `firmware`) activated for every `docker compose` command in this directory — the persistent switch that makes add-ons start on `up -d`, after reboots, and via the systemd unit. Manage with `setup.sh --with-gitlab` / `--with-firmware` (or `--without-*`). |
 | `NAUTOBOT_VERSION` | Image tag for `networktocode/nautobot` (e.g. `3.1-py3.12`). Read at build time as a docker compose build-arg; set or changed via `setup.sh -v <version>`. |
 | `NAUTOBOT_SECRET_KEY` | Django secret key (required, generate unique per deployment) |
 | `NAUTOBOT_ALLOWED_HOSTS` | Comma-separated hostnames/IPs allowed to reach Nautobot |
@@ -401,6 +402,21 @@ Then, in the Nautobot UI, go to **Jobs → Jobs**, click **Refresh** if needed, 
 
 A GitLab CE instance is included for storing configuration backups (e.g., Golden Config backup repos). It uses a [Compose profile](https://docs.docker.com/compose/how-tos/profiles/) and does not start by default.
 
+**Persistent (recommended):** enable the profile in `.env` so GitLab becomes a first-class part of the stack — it starts with a plain `docker compose up -d`, comes back after a reboot, and is covered by the optional [systemd unit](#running-as-a-systemd-service-linux):
+
+```bash
+# Writes COMPOSE_PROFILES=gitlab into .env (equivalently, edit that line by hand)
+./setup.sh --with-gitlab
+
+# From now on, no --profile flag needed anywhere:
+docker compose up -d
+
+# Disable again later (does not stop a running container):
+./setup.sh --without-gitlab
+```
+
+**One-off (does not persist, does not survive `docker compose down`/reboot via the unit):**
+
 ```bash
 # Start the full stack including GitLab
 docker compose --profile gitlab up
@@ -408,6 +424,8 @@ docker compose --profile gitlab up
 # Or start GitLab alongside an already-running stack
 docker compose --profile gitlab up -d gitlab
 ```
+
+> Once started, GitLab's container has `restart: unless-stopped` like everything else, so even a one-off start survives a host reboot on its own — until something runs `docker compose down` without the profile active. Enabling it in `.env` removes that trap.
 
 GitLab is available at:
 - **HTTP:** `http://localhost:8080`
@@ -435,23 +453,28 @@ A file you upload in the UI is **immediately** downloadable by a device — both
 
 ### Start it
 
+**Persistent (recommended):** enable the profile in `.env` — the firmware services start with a plain `docker compose up -d`, come back after a reboot, and are covered by the optional [systemd unit](#running-as-a-systemd-service-linux). Every `docker compose` command (`ps`, `logs`, …) includes them automatically, no `--profile` retyping:
+
 ```bash
-# Enable the "firmware" profile (it doesn't start by default).  The first start
+# Writes COMPOSE_PROFILES=firmware into .env (equivalently, edit that line by hand)
+./setup.sh --with-firmware
+docker compose up -d
+```
+
+**One-off (does not persist):**
+
+```bash
+# Enable the "firmware" profile for this command only.  The first start
 # builds a small nginx image (nginx:1.27-alpine + openssl + the first-run helper
 # scripts baked in — see firmware/nginx/Dockerfile); add --build to rebuild it
 # after editing a helper script.  The core services are unprofiled, so this also
 # leaves your already-running Nautobot stack as-is.
 docker compose --profile firmware up -d
-
-# Tip: export this once per shell so every `docker compose` command includes the
-# profile (`ps`, `logs`, etc.) without retyping --profile.
-export COMPOSE_PROFILES=firmware
-docker compose ps
 ```
 
 The two services join the same Compose network as Nautobot, so the Celery worker can reach the download endpoint when it validates registered images (see [Register in Nautobot](#register-an-image-in-nautobot)).
 
-> **`reset.sh` interaction:** like the GitLab profile, `reset.sh` does not manage the opt-in firmware services — a reset won't stop the firmware containers or remove the `nautobot_firmware*` volumes (your uploaded images survive). To remove just the firmware services yourself while leaving the rest of the stack running, use `docker compose --profile firmware rm -sf firmware-filebrowser firmware-download`; to also wipe the stored firmware, add `docker volume rm <project>_nautobot_firmware <project>_nautobot_firmware_db` (the project prefix defaults to the directory name, e.g. `nautobot-composer`).
+> **`reset.sh` interaction:** a reset destroys the opt-in add-ons too — by default `./reset.sh` stops the firmware containers, removes the `nautobot_firmware*` volumes (**your uploaded images are deleted**), and removes the built `firmware-download` image, exactly as it does for the core stack and GitLab. To reset everything *except* the firmware server, pass `--keep-firmware` (its containers keep running through the reset); see also `--keep-gitlab` and `--keep-env`, and use `--dry-run` to preview. One caveat: `--keep-firmware` without `--keep-env` preserves the Filebrowser database while `setup.sh` regenerates `.env` with a *new* admin password — the old password remains the valid one. To remove just the firmware services yourself while leaving the rest of the stack running, use `docker compose --profile firmware rm -sf firmware-filebrowser firmware-download`; to also wipe the stored firmware, add `docker volume rm <project>_nautobot_firmware <project>_nautobot_firmware_db` (the project prefix defaults to the directory name, e.g. `nautobot-composer`).
 
 ### Log in and upload
 
@@ -702,7 +725,9 @@ The installer renders the template with the correct `WorkingDirectory` (the scri
 
 If you'd rather do the install by hand, the template at [`systemd/nautobot-composer.service`](systemd/nautobot-composer.service) ships with `WorkingDirectory=/opt/nautobot-composer`; copy it to `/etc/systemd/system/`, edit that line if needed, then `daemon-reload && enable --now`.
 
-`ExecStart` runs `docker compose up -d`; `ExecStop` runs `docker compose down`. The unit `Requires=docker.service`, so if Docker is offline it won't start. `Type=oneshot` + `RemainAfterExit=yes` keep the unit reported as `active (exited)` while the containers run independently of systemd.
+`ExecStart` runs `docker compose up -d`; `ExecStop` runs `docker compose down --remove-orphans` (the flag makes `systemctl stop` take down the *whole* stack, including profile containers started ad hoc with `--profile X up` or left over after a profile was disabled). The unit `Requires=docker.service`, so if Docker is offline it won't start. `Type=oneshot` + `RemainAfterExit=yes` keep the unit reported as `active (exited)` while the containers run independently of systemd.
+
+**Opt-in add-ons and the unit:** no unit edits are needed for [GitLab](#gitlab-optional) or the [firmware server](#firmware-server-optional). Compose reads `COMPOSE_PROFILES` from the `.env` file in `WorkingDirectory`, so profiles enabled there (via `./setup.sh --with-gitlab --with-firmware`) are started and stopped by the unit like any core service.
 
 **macOS / Windows:** the equivalent is Docker Desktop's "Start when you sign in" setting (default on). The compose `restart` policy then handles reboot survival. macOS launchd / Windows service-manager configurations aren't shipped here because Docker Desktop on those platforms is intended for interactive sessions, not unattended servers.
 

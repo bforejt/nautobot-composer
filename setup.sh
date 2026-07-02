@@ -8,6 +8,8 @@
 # 4. Creates named Docker volumes.
 # 5. Creates required subdirectories inside the media volume.
 # 6. Sets volume ownership to the nautobot user (UID 999, GID 999).
+# 7. Verifies bind-mounted files are readable by the container user, and
+#    repairs permissions if they aren't.
 #
 # Uses a temporary Alpine container for all volume filesystem operations,
 # so this works identically on Linux and macOS without sudo.
@@ -29,6 +31,10 @@ DEBUG_MODE=false
 DO_BUILD=false
 DO_START=false
 DO_WAIT=false
+# Profile switches: empty = leave the .env value untouched; on/off = add or
+# remove that profile from COMPOSE_PROFILES in .env (see [4/7]).
+PROFILE_GITLAB=""
+PROFILE_FIRMWARE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -52,17 +58,43 @@ while [[ $# -gt 0 ]]; do
             DO_WAIT=true
             shift
             ;;
+        --with-gitlab|--without-gitlab)
+            new=$([[ "$1" == --without-* ]] && echo off || echo on)
+            if [[ -n "$PROFILE_GITLAB" && "$PROFILE_GITLAB" != "$new" ]]; then
+                echo "ERROR: --with-gitlab and --without-gitlab are contradictory." >&2
+                exit 1
+            fi
+            PROFILE_GITLAB="$new"
+            shift
+            ;;
+        --with-firmware|--without-firmware)
+            new=$([[ "$1" == --without-* ]] && echo off || echo on)
+            if [[ -n "$PROFILE_FIRMWARE" && "$PROFILE_FIRMWARE" != "$new" ]]; then
+                echo "ERROR: --with-firmware and --without-firmware are contradictory." >&2
+                exit 1
+            fi
+            PROFILE_FIRMWARE="$new"
+            shift
+            ;;
         --debug)
             DEBUG_MODE=true
             shift
             ;;
         -h|--help)
             cat <<'HELP'
-Usage: ./setup.sh [-v VERSION] [-p PYTHON] [--build] [--start] [--wait] [--debug]
+Usage: ./setup.sh [-v VERSION] [-p PYTHON] [--with-gitlab] [--with-firmware]
+                  [--build] [--start] [--wait] [--debug]
 
 Options:
   -v, --version VERSION   Nautobot version (default: 3.1)
   -p, --python  PYTHON    Python version suffix (default: 3.12)
+      --with-gitlab       Enable the GitLab add-on: adds 'gitlab' to
+                          COMPOSE_PROFILES in .env, so it starts with the
+                          stack ('up -d', reboot, systemd unit)
+      --without-gitlab    Disable the GitLab add-on (removes the profile
+                          from .env; does not stop a running container)
+      --with-firmware     Enable the firmware-server add-on (see README)
+      --without-firmware  Disable the firmware-server add-on
       --build             After setup, run 'docker compose build'
       --start             After setup (and --build if given), run
                           'docker compose up -d'
@@ -79,6 +111,12 @@ Examples:
 
   # First-time install in one shot — set up, build, start, wait until healthy.
   ./setup.sh --build --start --wait
+
+  # Same, with the GitLab add-on enabled persistently (starts on boot too).
+  ./setup.sh --with-gitlab --build --start --wait
+
+  # Enable the firmware server on an existing install and start it.
+  ./setup.sh --with-firmware --start
 
   # Switch to a different Nautobot version on an existing install.
   ./setup.sh -v 3.0 --build --start --wait
@@ -120,7 +158,7 @@ trap 'echo "ERROR: Script failed at line $LINENO.  Exit code: $?" >&2' ERR
 # Configuration
 # ---------------------------------------------------------------------------
 
-echo "[1/6] Loading configuration..."
+echo "[1/7] Loading configuration..."
 
 NAUTOBOT_UID=999
 NAUTOBOT_GID=999
@@ -202,7 +240,7 @@ generate_api_token() {
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "[2/6] Preflight checks..."
+echo "[2/7] Preflight checks..."
 
 # --- Docker CLI ---
 if ! command -v docker &>/dev/null; then
@@ -263,6 +301,23 @@ if ! docker info &>/dev/null; then
 fi
 echo "  daemon:   running"
 
+# --- Warn when running as root ---
+# Nothing here needs root (volume operations go through helper containers),
+# and running under sudo leaves every file this script or a root git clone
+# creates owned by root.  That has two failure modes later:
+#   1. A non-root 'docker compose up' cannot read a root-owned .env (mode 600).
+#   2. A root-owned nautobot_config.py without world-read crashes every
+#      Nautobot container at startup, because the containers run as UID 999
+#      and bind mounts pass host permissions through verbatim.
+# Step [7/7] detects and repairs case 2, but flag the root cause up front.
+if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+    echo "  WARNING: Running as root.  This script does not need root — volume" >&2
+    echo "           operations use helper containers.  Files created now will be" >&2
+    echo "           root-owned; if you later run 'docker compose' as a non-root" >&2
+    echo "           user, it will not be able to read the root-owned .env." >&2
+    echo "           Recommended: re-run as a regular user in the docker group." >&2
+fi
+
 # --- Docker Compose V2 ---
 # This project uses `docker compose` (V2 plugin), not the deprecated
 # standalone `docker-compose` (V1 Python package).
@@ -307,7 +362,7 @@ echo "  image:    networktocode/nautobot:${NAUTOBOT_IMAGE_TAG} (verified on Dock
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "[3/6] Environment file..."
+echo "[3/7] Environment file..."
 
 if [[ -f "$ENV_FILE" ]]; then
     echo "  .env already exists — skipping generation."
@@ -356,6 +411,14 @@ else
 #                generic confirmation
 # Set this to 'production' once you've pivoted this deployment beyond lab use.
 NAUTOBOT_ENV=lab
+
+# Comma-separated Compose profiles to activate persistently.  Compose reads
+# this file for every 'docker compose' command run in this directory, so
+# profiles listed here start with a plain 'up -d', come back after reboot,
+# and are covered by the optional systemd unit.  Available: gitlab, firmware.
+# Manage with './setup.sh --with-gitlab / --with-firmware' (or --without-*),
+# or edit directly, e.g.:  COMPOSE_PROFILES=gitlab,firmware
+COMPOSE_PROFILES=
 
 # Image tag for the upstream Nautobot base image.  Read at build time as
 # a docker compose build-arg.  Set or changed via 'setup.sh -v <version>'.
@@ -447,7 +510,7 @@ fi
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "[4/6] Configuring Nautobot version..."
+echo "[4/7] Configuring Nautobot version..."
 
 # Persist the resolved image tag in .env so docker-compose.yml's build-args
 # picks it up at build time.  This replaces the older approach of rewriting
@@ -505,6 +568,50 @@ elif [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_ADMIN_PASSWORD=' "$ENV_FILE";
     echo "        Firmware UI admin password: ${FW_ADMIN_PW}  (user: see FIRMWARE_ADMIN_USER)"
 fi
 
+# ---------------------------------------------------------------------------
+# Compose profiles (opt-in add-ons: gitlab, firmware)
+# ---------------------------------------------------------------------------
+# COMPOSE_PROFILES in .env is the persistent switch for the add-on services:
+# Compose reads it for every command run in this directory, so profiles
+# listed there start on 'docker compose up -d', come back after a reboot,
+# and are handled by the optional systemd unit.  --with-X / --without-X
+# add/remove entries; with neither flag the existing value is left alone.
+
+# Current value (may be absent in .env files that predate this scheme).
+CURRENT_PROFILES="$(grep -E '^COMPOSE_PROFILES=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+
+# Apply the requested changes to the comma-separated list.
+NEW_PROFILES="$CURRENT_PROFILES"
+apply_profile_switch() {
+    local name="$1" mode="$2" list="$NEW_PROFILES" out=()
+    [[ -z "$mode" ]] && return 0
+    local IFS=','
+    for p in $list; do
+        [[ -n "$p" && "$p" != "$name" ]] && out+=("$p")
+    done
+    [[ "$mode" == "on" ]] && out+=("$name")
+    NEW_PROFILES="${out[*]-}"
+}
+apply_profile_switch gitlab   "$PROFILE_GITLAB"
+apply_profile_switch firmware "$PROFILE_FIRMWARE"
+
+if [[ "$NEW_PROFILES" != "$CURRENT_PROFILES" ]] || ! grep -qE '^COMPOSE_PROFILES=' "$ENV_FILE"; then
+    if grep -qE '^COMPOSE_PROFILES=' "$ENV_FILE"; then
+        sed -i.bak "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=${NEW_PROFILES}|" "$ENV_FILE"
+        rm -f "${ENV_FILE}.bak"
+    else
+        # Backward-compat: append to an existing .env that predates profiles.
+        cat >> "$ENV_FILE" <<EOF
+
+# Comma-separated Compose profiles to activate persistently (gitlab, firmware).
+# Manage with './setup.sh --with-gitlab / --with-firmware' (or --without-*).
+COMPOSE_PROFILES=${NEW_PROFILES}
+EOF
+    fi
+    echo "  .env: COMPOSE_PROFILES → '${NEW_PROFILES}'"
+fi
+echo "  .env: active profiles: '${NEW_PROFILES:-none}' (add-ons start with the stack: up -d, reboot, systemd)"
+
 # Echo the active environment tier so the user sees what they're operating on.
 CURRENT_ENV="$(grep -E '^NAUTOBOT_ENV=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' || true)"
 CURRENT_ENV="${CURRENT_ENV:-lab}"
@@ -542,7 +649,7 @@ fi
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "[5/6] Creating Docker volumes..."
+echo "[5/7] Creating Docker volumes..."
 
 for vol in "${ALL_VOLUMES[@]}"; do
     if docker volume inspect "$vol" &>/dev/null; then
@@ -558,7 +665,7 @@ done
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "[6/6] Initializing Nautobot volumes (mkdir + chown ${NAUTOBOT_UID}:${NAUTOBOT_GID})..."
+echo "[6/7] Initializing Nautobot volumes (mkdir + chown ${NAUTOBOT_UID}:${NAUTOBOT_GID})..."
 
 MKDIR_ARGS=""
 for subdir in "${MEDIA_SUBDIRS[@]}"; do
@@ -604,6 +711,55 @@ docker run --rm \
         echo '  ${GIT_VOLUME}  owner='\$(stat -c '%u:%g' /git);
         echo '  ./jobs (bind mount)  owner='\$(stat -c '%u:%g' /jobs);
     "
+
+# ---------------------------------------------------------------------------
+# Verify bind-mounted files are readable by the container user
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "[7/7] Verifying container access to bind-mounted files..."
+
+# docker-compose.yml bind-mounts ./nautobot_config.py into every Nautobot
+# container, and those containers run as UID ${NAUTOBOT_UID}, not root.
+# Bind mounts pass host ownership and permissions through verbatim, so a
+# config file that is not world-readable (e.g. the repo was cloned as root
+# with a restrictive umask) crashes every container at startup with:
+#   PermissionError: [Errno 13] Permission denied: '/opt/nautobot/nautobot_config.py'
+# Test readability AS the container UID from inside a container — that is
+# the ground truth, and it also behaves correctly on macOS/Docker Desktop,
+# where file sharing virtualizes ownership.  If unreadable, repair via a
+# helper container (same no-sudo pattern as the volume chown above).
+CONFIG_HOST_FILE="${SCRIPT_DIR}/nautobot_config.py"
+
+check_bind_file_readable() {
+    docker run --rm --user "${NAUTOBOT_UID}:${NAUTOBOT_GID}" \
+        -v "$1:/check:ro" \
+        alpine sh -c 'cat /check >/dev/null' &>/dev/null
+}
+
+if check_bind_file_readable "$CONFIG_HOST_FILE"; then
+    echo "  nautobot_config.py — readable by container user (UID ${NAUTOBOT_UID})"
+else
+    echo "  nautobot_config.py — NOT readable by container user (UID ${NAUTOBOT_UID})"
+    echo "  Repairing: adding world-read (chmod o+r) via helper container..."
+    docker run --rm -v "${CONFIG_HOST_FILE}:/check" alpine chmod o+r /check || true
+    if check_bind_file_readable "$CONFIG_HOST_FILE"; then
+        echo "  Repaired — nautobot_config.py is now readable."
+    else
+        echo "  FAIL: nautobot_config.py is still not readable as UID ${NAUTOBOT_UID}." >&2
+        echo "" >&2
+        echo "  Current state:  $(ls -l "$CONFIG_HOST_FILE")" >&2
+        echo "  Without this the nautobot, celery_worker, and celery_beat" >&2
+        echo "  containers will crash-loop with:" >&2
+        echo "    PermissionError: [Errno 13] Permission denied: '/opt/nautobot/nautobot_config.py'" >&2
+        echo "" >&2
+        echo "  Fix manually and re-run:" >&2
+        echo "    sudo chmod 644 '${CONFIG_HOST_FILE}'" >&2
+        echo "  On SELinux-enforcing hosts you may also need:" >&2
+        echo "    sudo chcon -t container_file_t '${CONFIG_HOST_FILE}'" >&2
+        exit 1
+    fi
+fi
 
 echo ""
 echo "Setup complete."
