@@ -306,13 +306,19 @@ detect_primary_ip() {
 }
 PRIMARY_IP="$(detect_primary_ip || true)"
 
+# Host part of a URL: strips scheme, path, and port.  (No IPv6-literal
+# handling — lab URLs here are IPv4 or DNS names.)
+host_of_url() {
+    local host="${1#*://}"
+    host="${host%%/*}"
+    echo "${host%%:*}"
+}
+
 # Host part of the --firmware-url override (for FIRMWARE_SERVER_NAME, so the
 # nginx server_name and the self-signed cert SAN match the stored URLs).
 FIRMWARE_URL_HOST=""
 if [[ -n "$FIRMWARE_URL" ]]; then
-    FIRMWARE_URL_HOST="${FIRMWARE_URL#*://}"
-    FIRMWARE_URL_HOST="${FIRMWARE_URL_HOST%%/*}"
-    FIRMWARE_URL_HOST="${FIRMWARE_URL_HOST%%:*}"
+    FIRMWARE_URL_HOST="$(host_of_url "$FIRMWARE_URL")"
 fi
 
 # The resolved DEFAULT (HTTP) base URL for a given HTTP port: the explicit
@@ -329,10 +335,13 @@ firmware_base_url_for_port() {
     fi
 }
 
-# The HTTPS variant for a given HTTPS port — same host as the default URL
-# (the override's host when one was given, else the detected primary IP).
+# The HTTPS variant for a given HTTPS port.  Host precedence: an explicit
+# --firmware-url on this run, then the caller-supplied fallback host ($2 —
+# used to follow the host of an existing customised FIRMWARE_BASE_URL, so a
+# CA-certified DNS name is never replaced with a fabricated IP URL), then
+# the detected primary IP.
 firmware_https_url_for_port() {
-    local port="$1" host="${FIRMWARE_URL_HOST:-$PRIMARY_IP}"
+    local port="$1" host="${FIRMWARE_URL_HOST:-${2:-$PRIMARY_IP}}"
     if [[ -n "$host" ]]; then
         echo "https://${host}:${port}/images/"
     fi
@@ -741,10 +750,17 @@ fi
 #   * line present holding the https URL a PREVIOUS setup.sh auto-generated
 #     (exactly https://<current primary IP>:<FIRMWARE_HTTPS_PORT>/images/) —
 #     migrate it to the new http default; a value that doesn't match that
-#     pattern byte-for-byte was customised and is never touched
+#     pattern byte-for-byte was customised and is never touched.  ONE-SHOT:
+#     the migration only fires while FIRMWARE_BASE_URL_HTTPS is absent (the
+#     pre-http-default script never wrote that var, and this script appends
+#     it right below), so re-pinning https via --firmware-url or a hand
+#     edit sticks on every later run.
 #   * line present, no flag, not the old auto value — leave it alone
 # Then FIRMWARE_BASE_URL_HTTPS: append if missing (or refresh on an explicit
-# --firmware-url) so the Register job's per-run HTTPS opt-in has a value.
+# --firmware-url, or backfill a value left empty when IP detection failed)
+# so the Register job's per-run HTTPS opt-in has a value.  Its host follows
+# the existing FIRMWARE_BASE_URL so a customised DNS name is never replaced
+# with a fabricated IP URL.
 FW_HTTP_PORT="$(grep -E '^FIRMWARE_HTTP_PORT=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
 FW_HTTPS_PORT="$(grep -E '^FIRMWARE_HTTPS_PORT=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
 FW_URL_TOUCHED=false
@@ -769,9 +785,14 @@ elif [[ -f "$ENV_FILE" && -n "$FIRMWARE_URL" ]]; then
     set_env_var FIRMWARE_BASE_URL "$FIRMWARE_URL"
     FW_URL_TOUCHED=true
     echo "  .env: FIRMWARE_BASE_URL → ${FIRMWARE_URL}"
-elif [[ -f "$ENV_FILE" && -n "$PRIMARY_IP" ]]; then
-    # Migration: flip a provably auto-generated https default to the new
-    # http default (device TLS clients reject the self-signed cert).
+elif [[ -f "$ENV_FILE" && -n "$PRIMARY_IP" ]] \
+    && ! grep -qE '^FIRMWARE_BASE_URL_HTTPS=' "$ENV_FILE"; then
+    # One-shot migration: flip a provably auto-generated https default to
+    # the new http default (device TLS clients reject the self-signed
+    # cert).  Gated on FIRMWARE_BASE_URL_HTTPS being absent — only a .env
+    # written before the http-default change lacks it, and it is appended
+    # right below, so this can never fire twice: an https URL re-pinned
+    # later (via --firmware-url or a hand edit) is left alone.
     CURRENT_BASE_URL="$(grep -E '^FIRMWARE_BASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
     OLD_AUTO_HTTPS="https://${PRIMARY_IP}:${FW_HTTPS_PORT:-9443}/images/"
     if [[ "$CURRENT_BASE_URL" == "$OLD_AUTO_HTTPS" ]]; then
@@ -779,15 +800,24 @@ elif [[ -f "$ENV_FILE" && -n "$PRIMARY_IP" ]]; then
         set_env_var FIRMWARE_BASE_URL "$NEW_HTTP_URL"
         FW_URL_TOUCHED=true
         echo "  .env: FIRMWARE_BASE_URL → ${NEW_HTTP_URL}"
-        echo "        (migrated from the auto-generated https default: device TLS clients"
-        echo "         reject the self-signed cert; https stays available per run via the"
-        echo "         Register job's 'use HTTPS URL' option and FIRMWARE_BASE_URL_HTTPS)"
+        echo "        (one-shot migration from the auto-generated https default: device TLS"
+        echo "         clients reject the self-signed cert; https stays available per run via"
+        echo "         the Register job's 'use HTTPS URL' option and FIRMWARE_BASE_URL_HTTPS."
+        echo "         To keep https as the default, edit FIRMWARE_BASE_URL back — this"
+        echo "         migration never runs again once FIRMWARE_BASE_URL_HTTPS exists.)"
     fi
 fi
 
-# FIRMWARE_BASE_URL_HTTPS — the per-run HTTPS alternative for the Register job.
+# FIRMWARE_BASE_URL_HTTPS — the per-run HTTPS alternative for the Register
+# job.  Follow the host of the existing FIRMWARE_BASE_URL (a customised DNS
+# name or multi-homed IP) rather than fabricating one from the primary IP.
+FW_BASE_HOST=""
+if [[ -f "$ENV_FILE" ]]; then
+    EXISTING_BASE_URL="$(grep -E '^FIRMWARE_BASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+    [[ -n "$EXISTING_BASE_URL" ]] && FW_BASE_HOST="$(host_of_url "$EXISTING_BASE_URL")"
+fi
 if [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_BASE_URL_HTTPS=' "$ENV_FILE"; then
-    FW_HTTPS_URL="$(firmware_https_url_for_port "${FW_HTTPS_PORT:-9443}")"
+    FW_HTTPS_URL="$(firmware_https_url_for_port "${FW_HTTPS_PORT:-9443}" "$FW_BASE_HOST")"
     cat >> "$ENV_FILE" <<EOF
 
 # HTTPS variant of FIRMWARE_BASE_URL — stored per image only when the
@@ -795,11 +825,20 @@ if [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_BASE_URL_HTTPS=' "$ENV_FILE"; t
 FIRMWARE_BASE_URL_HTTPS=${FW_HTTPS_URL}
 EOF
     echo "  .env: FIRMWARE_BASE_URL_HTTPS appended (${FW_HTTPS_URL:-<empty>})"
-elif [[ -f "$ENV_FILE" && -n "$FIRMWARE_URL" ]]; then
-    FW_HTTPS_URL="$(firmware_https_url_for_port "${FW_HTTPS_PORT:-9443}")"
-    if [[ -n "$FW_HTTPS_URL" ]]; then
-        set_env_var FIRMWARE_BASE_URL_HTTPS "$FW_HTTPS_URL"
-        echo "  .env: FIRMWARE_BASE_URL_HTTPS → ${FW_HTTPS_URL} (host follows --firmware-url)"
+elif [[ -f "$ENV_FILE" ]]; then
+    CURRENT_HTTPS_URL="$(grep -E '^FIRMWARE_BASE_URL_HTTPS=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+    if [[ -n "$FIRMWARE_URL" || -z "$CURRENT_HTTPS_URL" ]]; then
+        # Refresh on an explicit --firmware-url, or backfill a line left
+        # empty by an earlier run where IP detection failed.
+        FW_HTTPS_URL="$(firmware_https_url_for_port "${FW_HTTPS_PORT:-9443}" "$FW_BASE_HOST")"
+        if [[ -n "$FW_HTTPS_URL" && "$FW_HTTPS_URL" != "$CURRENT_HTTPS_URL" ]]; then
+            set_env_var FIRMWARE_BASE_URL_HTTPS "$FW_HTTPS_URL"
+            if [[ -n "$FIRMWARE_URL" ]]; then
+                echo "  .env: FIRMWARE_BASE_URL_HTTPS → ${FW_HTTPS_URL} (host follows --firmware-url)"
+            else
+                echo "  .env: FIRMWARE_BASE_URL_HTTPS backfilled (${FW_HTTPS_URL})"
+            fi
+        fi
     fi
 fi
 

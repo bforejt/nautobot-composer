@@ -553,8 +553,8 @@ All tunables live in `.env` (documented in `env.example`). Defaults are chosen t
 |----------|---------|---------|
 | `FIRMWARE_BIND_ADDRESS` | `0.0.0.0` | Host interface all firmware ports bind to. Set to a management-interface IP to expose only there. |
 | `FIRMWARE_FILEBROWSER_PORT` | `8088` | Host port for the authenticated management UI. |
-| `FIRMWARE_HTTPS_PORT` | `9443` | Host port for the device HTTPS download endpoint. |
-| `FIRMWARE_HTTP_PORT` | `9080` | Host port for the device HTTP fallback. |
+| `FIRMWARE_HTTPS_PORT` | `9443` | Host port for the device HTTPS download endpoint (opt-in — needs a device-trusted cert). |
+| `FIRMWARE_HTTP_PORT` | `9080` | Host port for the device HTTP download endpoint (the default transfer path). |
 | `FIRMWARE_SERVER_NAME` | *(host primary IP)* | Hostname/IP in device URLs and the self-signed cert's CN/SAN. Must resolve from devices **and** the Nautobot worker. `setup.sh` sets it to the host's primary IP, matching `FIRMWARE_BASE_URL`; falls back to `localhost` if detection fails. |
 | `FIRMWARE_ALLOWED_CIDRS` | `0.0.0.0/0` | Comma/space-separated CIDRs allowed to pull from the device endpoint (nginx `allow`/`deny`). |
 | `FIRMWARE_ADMIN_USER` | `admin` | Filebrowser admin username. |
@@ -603,7 +603,7 @@ IOS-XE `copy https:` **validates the server certificate against the device's tru
 
 This server only hosts the file; you still tell Nautobot about it. The URL you serve **is** the value Nautobot hands to the device. Two ways:
 
-- **Manually:** in Nautobot, create/edit a **Device Software Image File** (`dcim.SoftwareImageFile`) and set **`download_url`** to the file's URL, e.g. `https://192.0.2.10:9443/images/cat9k_iosxe.17.09.04.SPA.bin` (plus its checksum and size).
+- **Manually:** in Nautobot, create/edit a **Device Software Image File** (`dcim.SoftwareImageFile`) and set **`download_url`** to the file's URL, e.g. `http://192.0.2.10:9080/images/cat9k_iosxe.17.09.04.SPA.bin` (plus its checksum and size). Use the `https://<host>:9443/images/...` form only once devices trust the server certificate (see [TLS](#tls)).
 - **Via the job:** run the **"Register IOS-XE Image"** job (from the companion *nautobot-upgrades* repo) with just the uploaded **filename** — the job builds the URL as `<FIRMWARE_BASE_URL>/<filename>` from the worker's environment.
 
 **How the job finds the base URL:** `.env` is the `env_file` for every Nautobot container, so the `FIRMWARE_BASE_URL` value that `setup.sh` writes there (host primary IP + `FIRMWARE_HTTP_PORT`, e.g. `http://192.0.2.10:9080/images/`) lands in the Celery worker's environment, where the job reads it. Selecting the job's **use HTTPS URL** option makes it read `FIRMWARE_BASE_URL_HTTPS` instead (host + `FIRMWARE_HTTPS_PORT`) — use that once devices trust the server certificate. The job's per-run *Firmware base URL* field can normally stay blank; fill it (or the full *Download URL override*) only to deviate for a single run. If either variable changes, run `docker compose up -d` so the worker container picks up the new value.
