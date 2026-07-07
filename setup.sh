@@ -116,9 +116,13 @@ Options:
                           to .env as FIRMWARE_BASE_URL and passed through to
                           the Nautobot worker (used by the nautobot-upgrades
                           Register Image job to build download URLs), e.g.
-                          https://192.0.2.10:9443/images/
-                          Default: derived from the host's primary IP
-                          (routing table — never DNS or hostname)
+                          http://192.0.2.10:9080/images/
+                          Default: plain-HTTP URL derived from the host's
+                          primary IP (routing table — never DNS or hostname).
+                          HTTP is the default because device TLS clients
+                          reject the self-signed cert; the HTTPS variant is
+                          kept alongside in FIRMWARE_BASE_URL_HTTPS for the
+                          Register job's per-run opt-in
       --build             After setup, run 'docker compose build'
       --start             After setup (and --build if given), run
                           'docker compose up -d'
@@ -144,7 +148,7 @@ Examples:
 
   # Same, but pin the device-facing download URL instead of auto-detecting
   # the host IP (multi-homed host, or a CA-certified DNS name).
-  ./setup.sh --with-firmware --firmware-url https://192.0.2.10:9443/images/ --start
+  ./setup.sh --with-firmware --firmware-url http://192.0.2.10:9080/images/ --start
 
   # Switch to a different Nautobot version on an existing install.
   ./setup.sh -v 3.0 --build --start --wait
@@ -268,7 +272,7 @@ generate_api_token() {
 }
 
 # ---------------------------------------------------------------------------
-# Helper: firmware base URL (FIRMWARE_BASE_URL)
+# Helper: firmware base URLs (FIRMWARE_BASE_URL / FIRMWARE_BASE_URL_HTTPS)
 #
 # The firmware add-on needs an EXTERNAL, device-reachable address to build
 # the download URLs stored in Nautobot (SoftwareImageFile.download_url, via
@@ -278,6 +282,13 @@ generate_api_token() {
 # names.  Instead the primary IP comes from the routing table — the address
 # this host actually uses to reach the network — and --firmware-url
 # overrides it for multi-homed hosts or CA-certified DNS names.
+#
+# The DEFAULT base URL uses plain HTTP: device HTTPS clients (e.g. IOS-XE
+# `copy https:`) validate the server certificate against their trustpoints
+# and reject the self-signed cert the download endpoint generates, so HTTPS
+# URLs only work once a CA-issued cert the devices trust is installed.  The
+# HTTPS variant is still written alongside (FIRMWARE_BASE_URL_HTTPS) so the
+# Register Image job can opt in per run.
 # ---------------------------------------------------------------------------
 
 detect_primary_ip() {
@@ -295,16 +306,23 @@ detect_primary_ip() {
 }
 PRIMARY_IP="$(detect_primary_ip || true)"
 
+# Host part of a URL: strips scheme, path, and port.  (No IPv6-literal
+# handling — lab URLs here are IPv4 or DNS names.)
+host_of_url() {
+    local host="${1#*://}"
+    host="${host%%/*}"
+    echo "${host%%:*}"
+}
+
 # Host part of the --firmware-url override (for FIRMWARE_SERVER_NAME, so the
 # nginx server_name and the self-signed cert SAN match the stored URLs).
 FIRMWARE_URL_HOST=""
 if [[ -n "$FIRMWARE_URL" ]]; then
-    FIRMWARE_URL_HOST="${FIRMWARE_URL#*://}"
-    FIRMWARE_URL_HOST="${FIRMWARE_URL_HOST%%/*}"
-    FIRMWARE_URL_HOST="${FIRMWARE_URL_HOST%%:*}"
+    FIRMWARE_URL_HOST="$(host_of_url "$FIRMWARE_URL")"
 fi
 
-# The resolved base URL for a given HTTPS port: the explicit override wins,
+# The resolved DEFAULT (HTTP) base URL for a given HTTP port: the explicit
+# --firmware-url override wins verbatim (whatever scheme the user chose),
 # else it is built from the detected primary IP.  Empty when neither is
 # available — the Register job treats an empty FIRMWARE_BASE_URL as unset
 # and asks for a per-run URL rather than storing one devices can't reach.
@@ -313,7 +331,19 @@ firmware_base_url_for_port() {
     if [[ -n "$FIRMWARE_URL" ]]; then
         echo "$FIRMWARE_URL"
     elif [[ -n "$PRIMARY_IP" ]]; then
-        echo "https://${PRIMARY_IP}:${port}/images/"
+        echo "http://${PRIMARY_IP}:${port}/images/"
+    fi
+}
+
+# The HTTPS variant for a given HTTPS port.  Host precedence: an explicit
+# --firmware-url on this run, then the caller-supplied fallback host ($2 —
+# used to follow the host of an existing customised FIRMWARE_BASE_URL, so a
+# CA-certified DNS name is never replaced with a fabricated IP URL), then
+# the detected primary IP.
+firmware_https_url_for_port() {
+    local port="$1" host="${FIRMWARE_URL_HOST:-${2:-$PRIMARY_IP}}"
+    if [[ -n "$host" ]]; then
+        echo "https://${host}:${port}/images/"
     fi
 }
 
@@ -480,9 +510,13 @@ else
     FIRMWARE_ADMIN_PASSWORD="$(generate_alphanum 24)"
     echo "    FIRMWARE_ADMIN_PW:  generated (${#FIRMWARE_ADMIN_PASSWORD} chars)"
 
-    # Device-facing firmware URL + matching server name (cert SAN).  9443 is
-    # the FIRMWARE_HTTPS_PORT default written into the block below.
-    FW_BASE_URL="$(firmware_base_url_for_port 9443)"
+    # Device-facing firmware URLs + matching server name (cert SAN).  9080 /
+    # 9443 are the FIRMWARE_HTTP_PORT / FIRMWARE_HTTPS_PORT defaults written
+    # into the block below.  HTTP is the default URL (device TLS clients
+    # reject the self-signed cert); the HTTPS variant is written alongside
+    # for the Register Image job's per-run opt-in.
+    FW_BASE_URL="$(firmware_base_url_for_port 9080)"
+    FW_HTTPS_URL="$(firmware_https_url_for_port 9443)"
     if [[ -n "$FIRMWARE_URL_HOST" ]]; then
         FW_SERVER_NAME="$FIRMWARE_URL_HOST"
     elif [[ -n "$FW_BASE_URL" ]]; then
@@ -494,6 +528,7 @@ else
         echo "    FIRMWARE_BASE_URL:  ${FW_BASE_URL}"
         [[ -z "$FIRMWARE_URL" ]] && \
             echo "                        (host primary IP auto-detected — override with --firmware-url)"
+        echo "    FIRMWARE_BASE_URL_HTTPS:  ${FW_HTTPS_URL}"
     else
         echo "    FIRMWARE_BASE_URL:  left empty — could not detect the host's primary IP."
         echo "                        Set it in .env or re-run with --firmware-url <url>."
@@ -597,8 +632,13 @@ FIRMWARE_ADMIN_PASSWORD=${FIRMWARE_ADMIN_PASSWORD}
 # Device-facing base URL for firmware downloads — passed through this
 # env_file to the Nautobot Celery worker, where the nautobot-upgrades
 # "Register IOS-XE Image" job builds download_url as <base>/<filename>.
+# Plain HTTP by default: device HTTPS clients validate the server cert
+# against their trustpoints and reject the self-signed one.  The HTTPS
+# variant below is used when the job's "use HTTPS URL" option is selected
+# (needs a CA-issued cert the devices trust — see README: TLS).
 # Keep the host in sync with FIRMWARE_SERVER_NAME (cert SAN / server_name).
 FIRMWARE_BASE_URL=${FW_BASE_URL}
+FIRMWARE_BASE_URL_HTTPS=${FW_HTTPS_URL}
 EOF
 
     chmod 600 "$ENV_FILE"
@@ -657,7 +697,8 @@ fi
 if [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_BIND_ADDRESS=' "$ENV_FILE"; then
     # No firmware block present at all — append the whole thing.
     FW_ADMIN_PW="$(generate_alphanum 24)"
-    FW_BASE_URL="$(firmware_base_url_for_port 9443)"
+    FW_BASE_URL="$(firmware_base_url_for_port 9080)"
+    FW_HTTPS_URL="$(firmware_https_url_for_port 9443)"
     if [[ -n "$FIRMWARE_URL_HOST" ]]; then
         FW_SERVER_NAME="$FIRMWARE_URL_HOST"
     elif [[ -n "$FW_BASE_URL" ]]; then
@@ -683,8 +724,11 @@ FIRMWARE_ADMIN_PASSWORD=${FW_ADMIN_PW}
 # Device-facing base URL for firmware downloads — passed through this
 # env_file to the Nautobot Celery worker, where the nautobot-upgrades
 # "Register IOS-XE Image" job builds download_url as <base>/<filename>.
-# Keep the host in sync with FIRMWARE_SERVER_NAME (cert SAN / server_name).
+# Plain HTTP by default (device TLS clients reject the self-signed cert);
+# the HTTPS variant is used when the job's "use HTTPS URL" option is
+# selected.  Keep hosts in sync with FIRMWARE_SERVER_NAME (cert SAN).
 FIRMWARE_BASE_URL=${FW_BASE_URL}
+FIRMWARE_BASE_URL_HTTPS=${FW_HTTPS_URL}
 EOF
     echo "  .env: firmware-server block appended (admin password generated)"
     echo "        Firmware UI admin password: ${FW_ADMIN_PW}  (user: see FIRMWARE_ADMIN_USER)"
@@ -700,14 +744,28 @@ fi
 
 # Backward-compat / override: FIRMWARE_BASE_URL — the device-facing download
 # URL, passed through .env (env_file) to the Celery worker where the
-# nautobot-upgrades "Register IOS-XE Image" job reads it.  Three cases:
+# nautobot-upgrades "Register IOS-XE Image" job reads it.  Cases:
 #   * line missing (block pre-dates it) — append with the resolved value
 #   * line present and --firmware-url given — update it
-#   * line present, no flag — leave the user's value alone
+#   * line present holding the https URL a PREVIOUS setup.sh auto-generated
+#     (exactly https://<current primary IP>:<FIRMWARE_HTTPS_PORT>/images/) —
+#     migrate it to the new http default; a value that doesn't match that
+#     pattern byte-for-byte was customised and is never touched.  ONE-SHOT:
+#     the migration only fires while FIRMWARE_BASE_URL_HTTPS is absent (the
+#     pre-http-default script never wrote that var, and this script appends
+#     it right below), so re-pinning https via --firmware-url or a hand
+#     edit sticks on every later run.
+#   * line present, no flag, not the old auto value — leave it alone
+# Then FIRMWARE_BASE_URL_HTTPS: append if missing (or refresh on an explicit
+# --firmware-url, or backfill a value left empty when IP detection failed)
+# so the Register job's per-run HTTPS opt-in has a value.  Its host follows
+# the existing FIRMWARE_BASE_URL so a customised DNS name is never replaced
+# with a fabricated IP URL.
+FW_HTTP_PORT="$(grep -E '^FIRMWARE_HTTP_PORT=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+FW_HTTPS_PORT="$(grep -E '^FIRMWARE_HTTPS_PORT=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
 FW_URL_TOUCHED=false
 if [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_BASE_URL=' "$ENV_FILE"; then
-    FW_HTTPS_PORT="$(grep -E '^FIRMWARE_HTTPS_PORT=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
-    FW_BASE_URL="$(firmware_base_url_for_port "${FW_HTTPS_PORT:-9443}")"
+    FW_BASE_URL="$(firmware_base_url_for_port "${FW_HTTP_PORT:-9080}")"
     cat >> "$ENV_FILE" <<EOF
 
 # Device-facing base URL for firmware downloads (see env.example) — read by
@@ -727,6 +785,61 @@ elif [[ -f "$ENV_FILE" && -n "$FIRMWARE_URL" ]]; then
     set_env_var FIRMWARE_BASE_URL "$FIRMWARE_URL"
     FW_URL_TOUCHED=true
     echo "  .env: FIRMWARE_BASE_URL → ${FIRMWARE_URL}"
+elif [[ -f "$ENV_FILE" && -n "$PRIMARY_IP" ]] \
+    && ! grep -qE '^FIRMWARE_BASE_URL_HTTPS=' "$ENV_FILE"; then
+    # One-shot migration: flip a provably auto-generated https default to
+    # the new http default (device TLS clients reject the self-signed
+    # cert).  Gated on FIRMWARE_BASE_URL_HTTPS being absent — only a .env
+    # written before the http-default change lacks it, and it is appended
+    # right below, so this can never fire twice: an https URL re-pinned
+    # later (via --firmware-url or a hand edit) is left alone.
+    CURRENT_BASE_URL="$(grep -E '^FIRMWARE_BASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+    OLD_AUTO_HTTPS="https://${PRIMARY_IP}:${FW_HTTPS_PORT:-9443}/images/"
+    if [[ "$CURRENT_BASE_URL" == "$OLD_AUTO_HTTPS" ]]; then
+        NEW_HTTP_URL="http://${PRIMARY_IP}:${FW_HTTP_PORT:-9080}/images/"
+        set_env_var FIRMWARE_BASE_URL "$NEW_HTTP_URL"
+        FW_URL_TOUCHED=true
+        echo "  .env: FIRMWARE_BASE_URL → ${NEW_HTTP_URL}"
+        echo "        (one-shot migration from the auto-generated https default: device TLS"
+        echo "         clients reject the self-signed cert; https stays available per run via"
+        echo "         the Register job's 'use HTTPS URL' option and FIRMWARE_BASE_URL_HTTPS."
+        echo "         To keep https as the default, edit FIRMWARE_BASE_URL back — this"
+        echo "         migration never runs again once FIRMWARE_BASE_URL_HTTPS exists.)"
+    fi
+fi
+
+# FIRMWARE_BASE_URL_HTTPS — the per-run HTTPS alternative for the Register
+# job.  Follow the host of the existing FIRMWARE_BASE_URL (a customised DNS
+# name or multi-homed IP) rather than fabricating one from the primary IP.
+FW_BASE_HOST=""
+if [[ -f "$ENV_FILE" ]]; then
+    EXISTING_BASE_URL="$(grep -E '^FIRMWARE_BASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+    [[ -n "$EXISTING_BASE_URL" ]] && FW_BASE_HOST="$(host_of_url "$EXISTING_BASE_URL")"
+fi
+if [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_BASE_URL_HTTPS=' "$ENV_FILE"; then
+    FW_HTTPS_URL="$(firmware_https_url_for_port "${FW_HTTPS_PORT:-9443}" "$FW_BASE_HOST")"
+    cat >> "$ENV_FILE" <<EOF
+
+# HTTPS variant of FIRMWARE_BASE_URL — stored per image only when the
+# Register job's "use HTTPS URL" option is selected (see env.example).
+FIRMWARE_BASE_URL_HTTPS=${FW_HTTPS_URL}
+EOF
+    echo "  .env: FIRMWARE_BASE_URL_HTTPS appended (${FW_HTTPS_URL:-<empty>})"
+elif [[ -f "$ENV_FILE" ]]; then
+    CURRENT_HTTPS_URL="$(grep -E '^FIRMWARE_BASE_URL_HTTPS=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+    if [[ -n "$FIRMWARE_URL" || -z "$CURRENT_HTTPS_URL" ]]; then
+        # Refresh on an explicit --firmware-url, or backfill a line left
+        # empty by an earlier run where IP detection failed.
+        FW_HTTPS_URL="$(firmware_https_url_for_port "${FW_HTTPS_PORT:-9443}" "$FW_BASE_HOST")"
+        if [[ -n "$FW_HTTPS_URL" && "$FW_HTTPS_URL" != "$CURRENT_HTTPS_URL" ]]; then
+            set_env_var FIRMWARE_BASE_URL_HTTPS "$FW_HTTPS_URL"
+            if [[ -n "$FIRMWARE_URL" ]]; then
+                echo "  .env: FIRMWARE_BASE_URL_HTTPS → ${FW_HTTPS_URL} (host follows --firmware-url)"
+            else
+                echo "  .env: FIRMWARE_BASE_URL_HTTPS backfilled (${FW_HTTPS_URL})"
+            fi
+        fi
+    fi
 fi
 
 # Keep FIRMWARE_SERVER_NAME (nginx server_name + self-signed cert SAN) aligned
