@@ -891,6 +891,29 @@ if [[ -f "$ENV_FILE" ]] \
     fi
 fi
 
+# FIRMWARE_HTTP_LEGACY_PORT — the extra publish that keeps pre-move
+# download_urls (which embed :9080) working.  Write it explicitly into any
+# .env that predates it, so what gets published never depends on the
+# compose default.  That default is 80 (a no-op that collapses onto the
+# primary publish) specifically so an unmigrated .env can't end up with no
+# port-80 publish at all; the real backward-compat value belongs here.
+CURRENT_HTTP_PORT="$(grep -E '^FIRMWARE_HTTP_PORT=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+if [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_HTTP_LEGACY_PORT=' "$ENV_FILE" \
+    && [[ "$CURRENT_HTTP_PORT" != "9080" ]]; then
+    # Skipped when the primary port is ITSELF still 9080 (the migration
+    # declined to touch a customised install): legacy URLs are already served
+    # by the primary publish, and leaving this unset lets the compose default
+    # (80) add the port-80 publish rather than suppressing it.
+    cat >> "$ENV_FILE" <<'EOF'
+
+# Legacy HTTP port published alongside FIRMWARE_HTTP_PORT so download_urls
+# registered before the port-80 move (they embed :9080) keep working.
+# Set equal to FIRMWARE_HTTP_PORT to disable the extra publish.
+FIRMWARE_HTTP_LEGACY_PORT=9080
+EOF
+    echo "  .env: FIRMWARE_HTTP_LEGACY_PORT appended (9080 — keeps pre-move download_urls working)"
+fi
+
 # Keep FIRMWARE_SERVER_NAME (nginx server_name + self-signed cert SAN) aligned
 # with the host in FIRMWARE_BASE_URL — but only on a run that actually set the
 # URL, and never clobber a name the user customised: an explicit

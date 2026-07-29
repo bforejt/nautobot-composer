@@ -326,11 +326,16 @@ services:
       - "${FIRMWARE_BIND_ADDRESS:-0.0.0.0}:${FIRMWARE_HTTP_PORT:-80}:80"
       # Legacy HTTP port — backward compatibility for download_urls registered
       # in Nautobot before the endpoint moved to port 80 (they embed :9080).
-      # Same container listener; harmless to leave on.  When FIRMWARE_HTTP_PORT
-      # is itself still 9080 this duplicates the line above, which Compose
-      # dedupes cleanly.  Retire it once no stored download_url references
+      # Same container listener, same content.  setup.sh writes 9080 into .env
+      # for existing installs; retire it once no stored download_url references
       # :9080 (ports: !override in docker-compose.override.yml).
-      - "${FIRMWARE_BIND_ADDRESS:-0.0.0.0}:${FIRMWARE_HTTP_LEGACY_PORT:-9080}:80"
+      #
+      # The DEFAULT here is deliberately 80, not 9080: an .env that still pins
+      # FIRMWARE_HTTP_PORT=9080 (not yet migrated) would otherwise render this
+      # line identically to the one above, and Compose's dedupe would leave the
+      # stack with NO port-80 publish at all — silently defeating the move.
+      # Defaulting to 80 makes an unset legacy port a harmless no-op instead.
+      - "${FIRMWARE_BIND_ADDRESS:-0.0.0.0}:${FIRMWARE_HTTP_LEGACY_PORT:-80}:80"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
       interval: 30s
