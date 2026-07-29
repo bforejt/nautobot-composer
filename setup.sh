@@ -116,7 +116,7 @@ Options:
                           to .env as FIRMWARE_BASE_URL and passed through to
                           the Nautobot worker (used by the nautobot-upgrades
                           Register Image job to build download URLs), e.g.
-                          http://192.0.2.10:9080/images/
+                          http://192.0.2.10/images/
                           Default: plain-HTTP URL derived from the host's
                           primary IP (routing table — never DNS or hostname).
                           HTTP is the default because device TLS clients
@@ -148,7 +148,7 @@ Examples:
 
   # Same, but pin the device-facing download URL instead of auto-detecting
   # the host IP (multi-homed host, or a CA-certified DNS name).
-  ./setup.sh --with-firmware --firmware-url http://192.0.2.10:9080/images/ --start
+  ./setup.sh --with-firmware --firmware-url http://192.0.2.10/images/ --start
 
   # Switch to a different Nautobot version on an existing install.
   ./setup.sh -v 3.0 --build --start --wait
@@ -331,7 +331,13 @@ firmware_base_url_for_port() {
     if [[ -n "$FIRMWARE_URL" ]]; then
         echo "$FIRMWARE_URL"
     elif [[ -n "$PRIMARY_IP" ]]; then
-        echo "http://${PRIMARY_IP}:${port}/images/"
+        # Omit the port when it is the scheme default (80) — some HTTP
+        # consumers of these URLs cannot handle an explicit port at all.
+        if [[ "$port" == "80" ]]; then
+            echo "http://${PRIMARY_IP}/images/"
+        else
+            echo "http://${PRIMARY_IP}:${port}/images/"
+        fi
     fi
 }
 
@@ -343,7 +349,11 @@ firmware_base_url_for_port() {
 firmware_https_url_for_port() {
     local port="$1" host="${FIRMWARE_URL_HOST:-${2:-$PRIMARY_IP}}"
     if [[ -n "$host" ]]; then
-        echo "https://${host}:${port}/images/"
+        if [[ "$port" == "443" ]]; then
+            echo "https://${host}/images/"
+        else
+            echo "https://${host}:${port}/images/"
+        fi
     fi
 }
 
@@ -510,12 +520,12 @@ else
     FIRMWARE_ADMIN_PASSWORD="$(generate_alphanum 24)"
     echo "    FIRMWARE_ADMIN_PW:  generated (${#FIRMWARE_ADMIN_PASSWORD} chars)"
 
-    # Device-facing firmware URLs + matching server name (cert SAN).  9080 /
+    # Device-facing firmware URLs + matching server name (cert SAN).  80 /
     # 9443 are the FIRMWARE_HTTP_PORT / FIRMWARE_HTTPS_PORT defaults written
     # into the block below.  HTTP is the default URL (device TLS clients
     # reject the self-signed cert); the HTTPS variant is written alongside
     # for the Register Image job's per-run opt-in.
-    FW_BASE_URL="$(firmware_base_url_for_port 9080)"
+    FW_BASE_URL="$(firmware_base_url_for_port 80)"
     FW_HTTPS_URL="$(firmware_https_url_for_port 9443)"
     if [[ -n "$FIRMWARE_URL_HOST" ]]; then
         FW_SERVER_NAME="$FIRMWARE_URL_HOST"
@@ -623,7 +633,8 @@ NAPALM_TIMEOUT=30
 FIRMWARE_BIND_ADDRESS=0.0.0.0
 FIRMWARE_FILEBROWSER_PORT=8088
 FIRMWARE_HTTPS_PORT=9443
-FIRMWARE_HTTP_PORT=9080
+FIRMWARE_HTTP_PORT=80
+FIRMWARE_HTTP_LEGACY_PORT=9080
 FIRMWARE_SERVER_NAME=${FW_SERVER_NAME}
 FIRMWARE_ALLOWED_CIDRS=0.0.0.0/0
 FIRMWARE_ADMIN_USER=admin
@@ -697,7 +708,7 @@ fi
 if [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_BIND_ADDRESS=' "$ENV_FILE"; then
     # No firmware block present at all — append the whole thing.
     FW_ADMIN_PW="$(generate_alphanum 24)"
-    FW_BASE_URL="$(firmware_base_url_for_port 9080)"
+    FW_BASE_URL="$(firmware_base_url_for_port 80)"
     FW_HTTPS_URL="$(firmware_https_url_for_port 9443)"
     if [[ -n "$FIRMWARE_URL_HOST" ]]; then
         FW_SERVER_NAME="$FIRMWARE_URL_HOST"
@@ -715,7 +726,8 @@ if [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_BIND_ADDRESS=' "$ENV_FILE"; the
 FIRMWARE_BIND_ADDRESS=0.0.0.0
 FIRMWARE_FILEBROWSER_PORT=8088
 FIRMWARE_HTTPS_PORT=9443
-FIRMWARE_HTTP_PORT=9080
+FIRMWARE_HTTP_PORT=80
+FIRMWARE_HTTP_LEGACY_PORT=9080
 FIRMWARE_SERVER_NAME=${FW_SERVER_NAME}
 FIRMWARE_ALLOWED_CIDRS=0.0.0.0/0
 FIRMWARE_ADMIN_USER=admin
@@ -765,7 +777,7 @@ FW_HTTP_PORT="$(grep -E '^FIRMWARE_HTTP_PORT=' "$ENV_FILE" 2>/dev/null | tail -1
 FW_HTTPS_PORT="$(grep -E '^FIRMWARE_HTTPS_PORT=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
 FW_URL_TOUCHED=false
 if [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_BASE_URL=' "$ENV_FILE"; then
-    FW_BASE_URL="$(firmware_base_url_for_port "${FW_HTTP_PORT:-9080}")"
+    FW_BASE_URL="$(firmware_base_url_for_port "${FW_HTTP_PORT:-80}")"
     cat >> "$ENV_FILE" <<EOF
 
 # Device-facing base URL for firmware downloads (see env.example) — read by
@@ -796,7 +808,7 @@ elif [[ -f "$ENV_FILE" && -n "$PRIMARY_IP" ]] \
     CURRENT_BASE_URL="$(grep -E '^FIRMWARE_BASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
     OLD_AUTO_HTTPS="https://${PRIMARY_IP}:${FW_HTTPS_PORT:-9443}/images/"
     if [[ "$CURRENT_BASE_URL" == "$OLD_AUTO_HTTPS" ]]; then
-        NEW_HTTP_URL="http://${PRIMARY_IP}:${FW_HTTP_PORT:-9080}/images/"
+        NEW_HTTP_URL="$(firmware_base_url_for_port "${FW_HTTP_PORT:-80}")"
         set_env_var FIRMWARE_BASE_URL "$NEW_HTTP_URL"
         FW_URL_TOUCHED=true
         echo "  .env: FIRMWARE_BASE_URL → ${NEW_HTTP_URL}"
@@ -839,6 +851,43 @@ elif [[ -f "$ENV_FILE" ]]; then
                 echo "  .env: FIRMWARE_BASE_URL_HTTPS backfilled (${FW_HTTPS_URL})"
             fi
         fi
+    fi
+fi
+
+# One-shot host-port migration: the firmware HTTP endpoint moved from host
+# port 9080 to the protocol default 80 (a consumer in the upgrade pipeline
+# cannot specify a port; the Nautobot web service gave up its plain-HTTP
+# 80 mapping to free it).  Migrate only the provably untouched pairing:
+# FIRMWARE_HTTP_PORT still the old 9080 default AND FIRMWARE_BASE_URL empty
+# or exactly the auto-generated URL for that port.  Anything customised is
+# left alone with a NOTE.  Naturally one-shot: after migration the port is
+# 80, so the 9080 condition never matches again.
+if [[ -f "$ENV_FILE" ]] \
+    && [[ "$(grep -E '^FIRMWARE_HTTP_PORT=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)" == "9080" ]]; then
+    CURRENT_BASE_URL="$(grep -E '^FIRMWARE_BASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+    OLD_AUTO_HTTP=""
+    [[ -n "$PRIMARY_IP" ]] && OLD_AUTO_HTTP="http://${PRIMARY_IP}:9080/images/"
+    if [[ -z "$CURRENT_BASE_URL" || ( -n "$OLD_AUTO_HTTP" && "$CURRENT_BASE_URL" == "$OLD_AUTO_HTTP" ) ]]; then
+        set_env_var FIRMWARE_HTTP_PORT 80
+        echo "  .env: FIRMWARE_HTTP_PORT → 80 (one-shot migration from the old 9080 default:"
+        echo "        a component consuming these URLs requires the protocol-default port;"
+        echo "        the Nautobot web service no longer publishes host port 80)"
+        if [[ -n "$CURRENT_BASE_URL" ]]; then
+            NEW_HTTP_URL="http://${PRIMARY_IP}/images/"
+            set_env_var FIRMWARE_BASE_URL "$NEW_HTTP_URL"
+            echo "  .env: FIRMWARE_BASE_URL → ${NEW_HTTP_URL} (follows the port migration)"
+        fi
+        echo "        To keep 9080 instead, set FIRMWARE_HTTP_PORT back — the migration only"
+        echo "        fires on the exact old default paired with an untouched FIRMWARE_BASE_URL."
+        echo "        NOTE: images already registered in Nautobot keep their STORED"
+        echo "        download_url; URLs embedding :9080 continue to work through the"
+        echo "        legacy compatibility port (FIRMWARE_HTTP_LEGACY_PORT, published"
+        echo "        alongside 80).  Re-register images at your leisure to converge on"
+        echo "        the port-less form, then retire the legacy mapping (see README)."
+    else
+        echo "  NOTE: the firmware HTTP endpoint now defaults to host port 80, but this .env"
+        echo "        pins FIRMWARE_HTTP_PORT=9080 with a customised FIRMWARE_BASE_URL — left"
+        echo "        untouched.  Edit both in .env if you want the new default."
     fi
 fi
 
@@ -1153,7 +1202,7 @@ echo ""
 if [[ "$DO_START" == true ]]; then
     echo "Stack is running.  Verify with:"
     echo "  docker compose ps"
-    echo "  curl -fsSL http://localhost/health/"
+    echo "  curl -fsSLk https://localhost/health/"
 else
     echo "Next steps:"
     echo "  1. Review .env and adjust NAUTOBOT_ALLOWED_HOSTS for production."

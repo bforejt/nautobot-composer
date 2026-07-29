@@ -64,8 +64,12 @@ services:
   nautobot:
     <<: [*nautobot-build, *nautobot-env, *nautobot-depends, *nautobot-volumes, *default-logging]
     container_name: nautobot
+    # HTTPS only.  The plain-HTTP mapping (80:8080) was removed on purpose:
+    # host port 80 is reserved for the firmware device-download endpoint,
+    # whose HTTP consumers can't always specify a port, and serving the web
+    # UI without TLS wasn't worth supporting anyway.  The container still
+    # listens on 8080 internally (healthcheck below, prod Caddy overlay).
     ports:
-      - "80:8080"
       - "443:8443"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health/"]
@@ -313,8 +317,20 @@ services:
       - ./firmware/certs:/etc/nginx/certs
     ports:
       # Device-facing HTTPS and HTTP.  Bind to FIRMWARE_BIND_ADDRESS.
+      # HTTP defaults to host port 80 — some HTTP consumers can't specify a
+      # port, and the Nautobot web service no longer publishes 80 (HTTPS
+      # only).  NOTE: the prod Caddy overlay also wants host port 80; when
+      # combining it with the firmware profile, set FIRMWARE_HTTP_PORT to a
+      # free port or FIRMWARE_BIND_ADDRESS to a dedicated interface IP.
       - "${FIRMWARE_BIND_ADDRESS:-0.0.0.0}:${FIRMWARE_HTTPS_PORT:-9443}:443"
-      - "${FIRMWARE_BIND_ADDRESS:-0.0.0.0}:${FIRMWARE_HTTP_PORT:-9080}:80"
+      - "${FIRMWARE_BIND_ADDRESS:-0.0.0.0}:${FIRMWARE_HTTP_PORT:-80}:80"
+      # Legacy HTTP port — backward compatibility for download_urls registered
+      # in Nautobot before the endpoint moved to port 80 (they embed :9080).
+      # Same container listener; harmless to leave on.  When FIRMWARE_HTTP_PORT
+      # is itself still 9080 this duplicates the line above, which Compose
+      # dedupes cleanly.  Retire it once no stored download_url references
+      # :9080 (ports: !override in docker-compose.override.yml).
+      - "${FIRMWARE_BIND_ADDRESS:-0.0.0.0}:${FIRMWARE_HTTP_LEGACY_PORT:-9080}:80"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
       interval: 30s
