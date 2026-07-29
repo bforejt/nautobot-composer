@@ -324,6 +324,13 @@ services:
       # free port or FIRMWARE_BIND_ADDRESS to a dedicated interface IP.
       - "${FIRMWARE_BIND_ADDRESS:-0.0.0.0}:${FIRMWARE_HTTPS_PORT:-9443}:443"
       - "${FIRMWARE_BIND_ADDRESS:-0.0.0.0}:${FIRMWARE_HTTP_PORT:-80}:80"
+      # Legacy HTTP port — backward compatibility for download_urls registered
+      # in Nautobot before the endpoint moved to port 80 (they embed :9080).
+      # Same container listener; harmless to leave on.  When FIRMWARE_HTTP_PORT
+      # is itself still 9080 this duplicates the line above, which Compose
+      # dedupes cleanly.  Retire it once no stored download_url references
+      # :9080 (ports: !override in docker-compose.override.yml).
+      - "${FIRMWARE_BIND_ADDRESS:-0.0.0.0}:${FIRMWARE_HTTP_LEGACY_PORT:-9080}:80"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
       interval: 30s
