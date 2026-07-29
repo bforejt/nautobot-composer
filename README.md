@@ -687,6 +687,10 @@ Two common causes:
 
 If a *brand-new* upload 403s only over the download endpoint but the file shows in the UI, the file may not be world-readable. The bootstrap sets Filebrowser's file/dir modes to `0644`/`0755` for exactly this reason (the nginx worker runs as a different uid); a file created some other way can be fixed with `docker exec nautobot-firmware-filebrowser chmod 644 "/srv/<file>"`.
 
+### Device downloads fail after the move to port 80
+
+Images registered **before** the firmware HTTP endpoint moved from `:9080` to port 80 keep their stored `download_url` — Nautobot hands the recorded URL to the device verbatim, and nothing serves `9080` any more. The device-side symptom is an opaque copy error (`%Error opening ... (I/O error)`), far from the cause. Re-run the **Register IOS-XE Image** job for each affected image, or edit each `SoftwareImageFile.download_url` to the port-less form (`http://<host>/images/<file>`). `setup.sh`'s migration prints this warning when it fires; it cannot fix the database itself.
+
 ### Firmware server ports already in use (`8088` / `9443` / `80`)
 
 Another process holds one of the firmware host ports. Port `80` in particular is contested: the prod Caddy overlay binds it for ACME/redirect, and anything else on the host serving plain HTTP will too. Change the offending `FIRMWARE_*_PORT` in `.env` and re-run the `up` command, or set `FIRMWARE_BIND_ADDRESS` to a specific interface IP so the bind is narrower.

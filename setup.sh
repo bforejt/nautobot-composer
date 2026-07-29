@@ -877,6 +877,12 @@ if [[ -f "$ENV_FILE" ]] \
         fi
         echo "        To keep 9080 instead, set FIRMWARE_HTTP_PORT back — the migration only"
         echo "        fires on the exact old default paired with an untouched FIRMWARE_BASE_URL."
+        echo "        WARNING: images already registered in Nautobot keep their STORED"
+        echo "        download_url.  Anything registered under the old default points at"
+        echo "        ...:9080/images/... and nothing serves that port after the next"
+        echo "        'docker compose up -d'.  Re-run the Register IOS-XE Image job for"
+        echo "        those images (or edit each SoftwareImageFile's download_url) —"
+        echo "        setup.sh cannot modify the Nautobot database."
     else
         echo "  NOTE: the firmware HTTP endpoint now defaults to host port 80, but this .env"
         echo "        pins FIRMWARE_HTTP_PORT=9080 with a customised FIRMWARE_BASE_URL — left"
