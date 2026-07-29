@@ -50,11 +50,17 @@ services:
     image: caddy:2-alpine
     container_name: nautobot-caddy
     # NOTE: the firmware profile's HTTP download endpoint ALSO defaults to
-    # host port 80 (FIRMWARE_HTTP_PORT).  When combining this overlay with
-    # the firmware add-on, either set FIRMWARE_HTTP_PORT to a free port in
-    # .env or bind the firmware ports to a dedicated interface via
-    # FIRMWARE_BIND_ADDRESS — Caddy needs 80 for the ACME HTTP-01 challenge
-    # and the HTTP→HTTPS redirect.
+    # host port 80, via TWO variables — FIRMWARE_HTTP_PORT and the legacy
+    # compatibility publish FIRMWARE_HTTP_LEGACY_PORT (which itself defaults
+    # to 80 when absent from .env).  When combining this overlay with the
+    # firmware add-on you must therefore either:
+    #   * set BOTH to free ports in .env (running ./setup.sh writes
+    #     FIRMWARE_HTTP_LEGACY_PORT=9080 for you; moving FIRMWARE_HTTP_PORT
+    #     alone is NOT enough if the legacy line is missing), or
+    #   * bind the firmware ports to a dedicated interface IP via
+    #     FIRMWARE_BIND_ADDRESS.
+    # Caddy needs 80 for the ACME HTTP-01 challenge and the HTTP→HTTPS
+    # redirect, so an unnoticed firmware bind on 0.0.0.0:80 breaks startup.
     ports:
       - "80:80"
       - "443:443"
