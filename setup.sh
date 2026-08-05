@@ -365,6 +365,32 @@ set_env_var() {
     rm -f "${ENV_FILE}.bak"
 }
 
+# Read a variable out of .env the way Compose's dotenv parser resolves it.
+# A naive `cut | tr -d '" '` disagrees with Compose on four spellings that
+# occur in real files — single quotes, a trailing CR from a CRLF-saved
+# file, tabs, and inline `# comments` — and every such disagreement makes
+# the decisions below (migrate? append?) fire against the wrong value.
+env_value() {
+    local v
+    v="$(grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+    v="${v%$'\r'}"                                  # CRLF-saved .env
+    v="${v#"${v%%[![:space:]]*}"}"                  # trim leading blanks
+    case "$v" in
+        \"*\"*|\'*\'*)
+            # Quoted: take what is inside the first matching pair (a '#'
+            # inside quotes is data, not a comment).
+            local q="${v:0:1}" rest
+            rest="${v:1}"
+            v="${rest%%${q}*}"
+            ;;
+        *)
+            v="${v%%[[:space:]]#*}"                 # inline comment
+            v="${v%"${v##*[![:space:]]}"}"          # trim trailing blanks
+            ;;
+    esac
+    printf '%s' "$v"
+}
+
 # ---------------------------------------------------------------------------
 # Preflight checks
 # ---------------------------------------------------------------------------
@@ -773,8 +799,8 @@ fi
 # so the Register job's per-run HTTPS opt-in has a value.  Its host follows
 # the existing FIRMWARE_BASE_URL so a customised DNS name is never replaced
 # with a fabricated IP URL.
-FW_HTTP_PORT="$(grep -E '^FIRMWARE_HTTP_PORT=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
-FW_HTTPS_PORT="$(grep -E '^FIRMWARE_HTTPS_PORT=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+FW_HTTP_PORT="$(env_value FIRMWARE_HTTP_PORT)"
+FW_HTTPS_PORT="$(env_value FIRMWARE_HTTPS_PORT)"
 FW_URL_TOUCHED=false
 if [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_BASE_URL=' "$ENV_FILE"; then
     FW_BASE_URL="$(firmware_base_url_for_port "${FW_HTTP_PORT:-80}")"
@@ -805,7 +831,7 @@ elif [[ -f "$ENV_FILE" && -n "$PRIMARY_IP" ]] \
     # written before the http-default change lacks it, and it is appended
     # right below, so this can never fire twice: an https URL re-pinned
     # later (via --firmware-url or a hand edit) is left alone.
-    CURRENT_BASE_URL="$(grep -E '^FIRMWARE_BASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+    CURRENT_BASE_URL="$(env_value FIRMWARE_BASE_URL)"
     OLD_AUTO_HTTPS="https://${PRIMARY_IP}:${FW_HTTPS_PORT:-9443}/images/"
     if [[ "$CURRENT_BASE_URL" == "$OLD_AUTO_HTTPS" ]]; then
         NEW_HTTP_URL="$(firmware_base_url_for_port "${FW_HTTP_PORT:-80}")"
@@ -825,7 +851,7 @@ fi
 # name or multi-homed IP) rather than fabricating one from the primary IP.
 FW_BASE_HOST=""
 if [[ -f "$ENV_FILE" ]]; then
-    EXISTING_BASE_URL="$(grep -E '^FIRMWARE_BASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+    EXISTING_BASE_URL="$(env_value FIRMWARE_BASE_URL)"
     [[ -n "$EXISTING_BASE_URL" ]] && FW_BASE_HOST="$(host_of_url "$EXISTING_BASE_URL")"
 fi
 if [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_BASE_URL_HTTPS=' "$ENV_FILE"; then
@@ -838,7 +864,7 @@ FIRMWARE_BASE_URL_HTTPS=${FW_HTTPS_URL}
 EOF
     echo "  .env: FIRMWARE_BASE_URL_HTTPS appended (${FW_HTTPS_URL:-<empty>})"
 elif [[ -f "$ENV_FILE" ]]; then
-    CURRENT_HTTPS_URL="$(grep -E '^FIRMWARE_BASE_URL_HTTPS=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+    CURRENT_HTTPS_URL="$(env_value FIRMWARE_BASE_URL_HTTPS)"
     if [[ -n "$FIRMWARE_URL" || -z "$CURRENT_HTTPS_URL" ]]; then
         # Refresh on an explicit --firmware-url, or backfill a line left
         # empty by an earlier run where IP detection failed.
@@ -863,8 +889,8 @@ fi
 # left alone with a NOTE.  Naturally one-shot: after migration the port is
 # 80, so the 9080 condition never matches again.
 if [[ -f "$ENV_FILE" ]] \
-    && [[ "$(grep -E '^FIRMWARE_HTTP_PORT=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)" == "9080" ]]; then
-    CURRENT_BASE_URL="$(grep -E '^FIRMWARE_BASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+    && [[ "$(env_value FIRMWARE_HTTP_PORT)" == "9080" ]]; then
+    CURRENT_BASE_URL="$(env_value FIRMWARE_BASE_URL)"
     OLD_AUTO_HTTP=""
     [[ -n "$PRIMARY_IP" ]] && OLD_AUTO_HTTP="http://${PRIMARY_IP}:9080/images/"
     if [[ -z "$CURRENT_BASE_URL" || ( -n "$OLD_AUTO_HTTP" && "$CURRENT_BASE_URL" == "$OLD_AUTO_HTTP" ) ]]; then
@@ -877,8 +903,9 @@ if [[ -f "$ENV_FILE" ]] \
             set_env_var FIRMWARE_BASE_URL "$NEW_HTTP_URL"
             echo "  .env: FIRMWARE_BASE_URL → ${NEW_HTTP_URL} (follows the port migration)"
         fi
-        echo "        To keep 9080 instead, set FIRMWARE_HTTP_PORT back — the migration only"
-        echo "        fires on the exact old default paired with an untouched FIRMWARE_BASE_URL."
+        echo "        To keep 9080 as the ONLY published HTTP port, set FIRMWARE_HTTP_PORT"
+        echo "        back to 9080 — note that host port 80 is then not published at all,"
+        echo "        which is what a component requiring the default port needs."
         echo "        NOTE: images already registered in Nautobot keep their STORED"
         echo "        download_url; URLs embedding :9080 continue to work through the"
         echo "        legacy compatibility port (FIRMWARE_HTTP_LEGACY_PORT, published"
@@ -891,13 +918,35 @@ if [[ -f "$ENV_FILE" ]] \
     fi
 fi
 
+# FIRMWARE_HTTP_LEGACY_PORT — the extra publish that keeps pre-move
+# download_urls (which embed :9080) working.  Write it explicitly into any
+# .env that predates it, so what gets published never depends on the
+# compose default.  That default is 80 (a no-op that collapses onto the
+# primary publish) specifically so an unmigrated .env can't end up with no
+# port-80 publish at all; the real backward-compat value belongs here.
+if [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_HTTP_LEGACY_PORT=' "$ENV_FILE"; then
+    # Written UNCONDITIONALLY, including when the primary port is itself
+    # still 9080: the two publishes then collapse to one (9080 only), which
+    # respects a deliberately pinned port instead of forcing an unwanted
+    # host-80 bind on it.  Every setup.sh-managed .env therefore states both
+    # ports explicitly, and the compose defaults decide nothing.
+    cat >> "$ENV_FILE" <<'EOF'
+
+# Legacy HTTP port published alongside FIRMWARE_HTTP_PORT so download_urls
+# registered before the port-80 move (they embed :9080) keep working.
+# Set equal to FIRMWARE_HTTP_PORT to disable the extra publish.
+FIRMWARE_HTTP_LEGACY_PORT=9080
+EOF
+    echo "  .env: FIRMWARE_HTTP_LEGACY_PORT appended (9080 — keeps pre-move download_urls working)"
+fi
+
 # Keep FIRMWARE_SERVER_NAME (nginx server_name + self-signed cert SAN) aligned
 # with the host in FIRMWARE_BASE_URL — but only on a run that actually set the
 # URL, and never clobber a name the user customised: an explicit
 # --firmware-url always wins; auto-detection only replaces the shipped
 # default ('localhost').
 if [[ "$FW_URL_TOUCHED" == true && -f "$ENV_FILE" ]]; then
-    CURRENT_FW_NAME="$(grep -E '^FIRMWARE_SERVER_NAME=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+    CURRENT_FW_NAME="$(env_value FIRMWARE_SERVER_NAME)"
     NEW_FW_NAME="${FIRMWARE_URL_HOST:-$PRIMARY_IP}"
     if [[ -n "$NEW_FW_NAME" && -n "$CURRENT_FW_NAME" && "$CURRENT_FW_NAME" != "$NEW_FW_NAME" ]] \
         && [[ -n "$FIRMWARE_URL" || "$CURRENT_FW_NAME" == "localhost" ]]; then
@@ -922,7 +971,7 @@ fi
 # add/remove entries; with neither flag the existing value is left alone.
 
 # Current value (may be absent in .env files that predate this scheme).
-CURRENT_PROFILES="$(grep -E '^COMPOSE_PROFILES=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
+CURRENT_PROFILES="$(env_value COMPOSE_PROFILES)"
 
 # Apply the requested changes to the comma-separated list.
 NEW_PROFILES="$CURRENT_PROFILES"
@@ -957,7 +1006,7 @@ fi
 echo "  .env: active profiles: '${NEW_PROFILES:-none}' (add-ons start with the stack: up -d, reboot, systemd)"
 
 # Echo the active environment tier so the user sees what they're operating on.
-CURRENT_ENV="$(grep -E '^NAUTOBOT_ENV=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' || true)"
+CURRENT_ENV="$(env_value NAUTOBOT_ENV)"
 CURRENT_ENV="${CURRENT_ENV:-lab}"
 echo "  .env: NAUTOBOT_ENV is '${CURRENT_ENV}'"
 # If .env was just created above, NAUTOBOT_VERSION is already in it via
