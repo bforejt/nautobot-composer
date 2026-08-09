@@ -347,6 +347,73 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # --------------------------------------------------------------------------
+  # NFV Answer Service — bare-metal install engine  [profile: answer-service]
+  # --------------------------------------------------------------------------
+  # Opt-in: docker compose --profile answer-service up -d --build
+  # The SoT-backed brain of the nautobot-proxmox bare-metal install loop: the
+  # Proxmox auto-installer POSTs a machine's identity here; this service
+  # matches it against Nautobot (serial allowlist) and renders a per-node
+  # answer file, then receives the firstboot credential phone-home (per-node
+  # API token -> text-file Secrets + SecretsGroup) and the post-install
+  # webhook (provisioning_state).  Full docs: nautobot-proxmox repo,
+  # docs/baremetal-install.md.
+  #
+  # Build context is the SIBLING nautobot-proxmox checkout (override with
+  # ANSWER_SERVICE_BUILD_CONTEXT if yours lives elsewhere).
+  #
+  # NOTE on ./secrets: the stack's rule is "nothing writes secrets" — this
+  # service is the deliberate exception.  It writes ONLY under
+  # ./secrets/nodes/ (per-node Proxmox API tokens captured at firstboot) and
+  # reads ./secrets/root_password_hash.  Nautobot still mounts the same
+  # directory read-only.
+  answer-service:
+    <<: *default-logging
+    build:
+      context: ${ANSWER_SERVICE_BUILD_CONTEXT:-../nautobot-proxmox/bmc}
+      dockerfile: answer_service/Dockerfile
+    container_name: answer-service
+    profiles:
+      - answer-service
+    depends_on:
+      nautobot:
+        condition: service_healthy
+    # Deliberately NOT env_file: .env — the stack .env holds DB credentials
+    # this service has no business seeing.  Explicit environment only.
+    environment:
+      NAUTOBOT_URL: "http://nautobot:8080"
+      NAUTOBOT_TOKEN: "${ANSWER_NAUTOBOT_TOKEN:?Set ANSWER_NAUTOBOT_TOKEN in .env (see env.example)}"
+      # How NODES reach this service — LAN address, not localhost.
+      PUBLIC_URL: "${ANSWER_PUBLIC_URL:?Set ANSWER_PUBLIC_URL in .env (see env.example)}"
+      # SHA256 of the TLS cert below; also baked into prepared installer
+      # media via prepare-install-iso.sh --fingerprint.
+      CERT_FINGERPRINT: "${ANSWER_CERT_FINGERPRINT:-}"
+      SSL_CERTFILE: /tls/answer-service.crt
+      SSL_KEYFILE: /tls/answer-service.key
+      ROOT_PASSWORD_HASH_FILE: /secrets/root_password_hash
+      SECRETS_DIR: /secrets/nodes
+      NAUTOBOT_SECRETS_PATH: /opt/nautobot/secrets/nodes
+      DOMAIN: "${ANSWER_DOMAIN:-nfv.lab}"
+      TIMEZONE: "${ANSWER_TIMEZONE:-America/Chicago}"
+    volumes:
+      # One-time-key store + install-report archive.  Losing it mid-install
+      # strands a node between answer and phone-home — keep it durable.
+      - nautobot_answer_data:/data
+      - ./secrets:/secrets
+      # TLS keypair (generate once; the cert's SHA256 fingerprint is baked
+      # into prepared installer media — regenerating the cert means
+      # re-preparing the ISOs/PXE artifacts).  Git-ignored.
+      - ./answer-service/certs:/tls
+    ports:
+      - "${ANSWER_BIND_ADDRESS:-0.0.0.0}:${ANSWER_PORT:-8800}:8800"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import ssl,urllib.request as u; u.urlopen('https://localhost:8800/healthz', context=ssl._create_unverified_context(), timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
 volumes:
   nautobot_postgres_data:
     external: true
@@ -370,3 +437,5 @@ volumes:
   # Filebrowser's own DB (users/settings), kept off the shared volume so it is
   # never exposed by the download endpoint.
   nautobot_firmware_db:
+  # Answer service (profile: answer-service): one-time keys + install reports.
+  nautobot_answer_data:
