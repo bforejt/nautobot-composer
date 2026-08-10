@@ -14,6 +14,7 @@ Production-ready Docker Compose deployment for [Nautobot 3.x](https://docs.nauto
 | **GitLab CE** | `gitlab/gitlab-ce:latest` | Git repository server for config backups (opt-in) |
 | **Filebrowser** | `filebrowser/filebrowser:v2.63.17` | Authenticated web UI to upload/manage firmware images (opt-in — [Firmware Server](#firmware-server-optional)) |
 | **nginx** | Custom (based on `nginx:1.30-alpine`) | Read-only, network-restricted device-download endpoint for firmware (opt-in) |
+| **Answer Service** | Custom (built from a sibling [nautobot-proxmox](https://github.com/bforejt/nautobot-proxmox) checkout) | SoT-driven bare-metal Proxmox install engine (opt-in — [Answer Service](#answer-service-optional)) |
 
 ## Prerequisites
 
@@ -427,9 +428,9 @@ Rotation is step 1 alone: the provider re-reads the file on every access, so the
 
 ### Security model
 
-- Secret values sit on the host in plaintext at mode `640` — the **same trust level as `.env`**, which already holds the database and admin credentials. The mount is read-only; nothing in the stack can modify or create secrets.
+- Secret values sit on the host in plaintext at mode `640` — the **same trust level as `.env`**, which already holds the database and admin credentials. Nautobot's mount is read-only; one deliberate, scoped exception exists to "nothing in the stack writes secrets": the opt-in [Answer Service](#answer-service-optional) writes **only** under `./secrets/nodes/` — per-node Proxmox API tokens it captures at a freshly installed machine's first boot, so no human ever handles those values.
 - The text-file provider reads any path the *container* user can read, not just `./secrets/` — a Nautobot user permitted to create Secrets and view their values could point one at `nautobot_config.py`. That is inherent to the provider; the control is Nautobot RBAC on `extras | secret` permissions.
-- `backup.sh` deliberately does **not** back up `./secrets/` — keep the source of truth in a password manager or vault and treat the files as a repopulatable cache. `reset.sh` leaves them untouched (host files, like `./jobs`).
+- `backup.sh` deliberately does **not** back up `./secrets/` — keep the source of truth in a password manager or vault and treat the files as a repopulatable cache. `reset.sh` leaves them untouched (host files, like `./jobs`). Exception: `./secrets/nodes/` is *not* repopulatable — see the [Answer Service](#answer-service-optional) backup notes.
 - Everything in `secrets/` except its README is gitignored.
 
 ### If you outgrow files: external secret stores
@@ -611,6 +612,28 @@ This server only hosts the file; you still tell Nautobot about it. The URL you s
 **How the job finds the base URL:** `.env` is the `env_file` for every Nautobot container, so the `FIRMWARE_BASE_URL` value that `setup.sh` writes there (host primary IP + `FIRMWARE_HTTP_PORT`, e.g. `http://192.0.2.10/images/`) lands in the Celery worker's environment, where the job reads it. Selecting the job's **use HTTPS URL** option makes it read `FIRMWARE_BASE_URL_HTTPS` instead (host + `FIRMWARE_HTTPS_PORT`) — use that once devices trust the server certificate. The job's per-run *Firmware base URL* field can normally stay blank; fill it (or the full *Download URL override*) only to deviate for a single run. If either variable changes, run `docker compose up -d` so the worker container picks up the new value.
 
 The Register job validates the image **from the Celery worker**, so the URL must be reachable from the worker as well as from the device. The worker can always reach the download service directly on the Compose network (`http://firmware-download/images/<filename>`, its preferred validation route); if it must validate the host-based URL instead, make sure the worker container can route to that host/port (on Docker Desktop, that's `host.docker.internal`).
+
+## Answer Service (Optional)
+
+The SoT-backed engine of the [nautobot-proxmox](https://github.com/bforejt/nautobot-proxmox) bare-metal install loop, gated behind the `answer-service` Compose profile (off by default, like GitLab and Firmware). An installing machine's Proxmox auto-installer POSTs its identity (DMI serial, NIC MACs) here; the service matches it against Nautobot's **serial allowlist** and returns a per-node answer file, then captures the node's firstboot credential phone-home (its per-node Proxmox API token → text-file Secrets under `./secrets/nodes/` + a Secrets Group) and the post-install webhook (provisioning state). Machines Nautobot doesn't expect get a `403` and install nothing — which is what makes a standing install service safe to run.
+
+You need it only if you use the nautobot-proxmox bare-metal install track; the full architecture, security model, and runbook live in that repo's `docs/baremetal-install.md`. One-time setup (TLS keypair, `.env` values, root password hash) is in [`answer-service/README.md`](answer-service/README.md); it builds from a **sibling checkout** of nautobot-proxmox (`ANSWER_SERVICE_BUILD_CONTEXT` overrides the location).
+
+**Start it** — persistent, same pattern as the firmware profile (comes back after reboot, covered by the systemd unit):
+
+```bash
+# Add answer-service to COMPOSE_PROFILES in .env (comma-separated with any
+# other profiles, e.g. COMPOSE_PROFILES=firmware,answer-service), then:
+docker compose up -d --build
+```
+
+Ad-hoc instead: `docker compose --profile answer-service up -d --build`.
+
+**What to back up** (not covered by `backup.sh`, which handles database + media):
+
+- `answer-service/certs/` — the TLS keypair. Its SHA256 fingerprint is **baked into prepared installer ISOs/PXE artifacts**; losing the key means regenerating it *and* re-preparing all installer media.
+- `./secrets/nodes/` — per-node Proxmox API tokens captured at firstboot. Unlike the rest of `./secrets/` these are **not** a repopulatable cache: a lost token is recoverable only by reinstalling that node.
+- The `nautobot_answer_data` volume — one-time install keys and archived install reports (losing it mid-install strands that install; otherwise low-value).
 
 ## Troubleshooting
 

@@ -43,8 +43,16 @@ repo (built from that repo's `bmc/` directory — a sibling checkout by default)
 
 ## Notes
 
+- **Boot persistence**: add `answer-service` to `COMPOSE_PROFILES` in `.env`
+  (comma-separated with other profiles) so it starts with plain
+  `docker compose up -d`, survives reboots, and is covered by the systemd
+  unit — same pattern as the firmware profile.
 - This service is the deliberate exception to the "nothing in the stack
   writes `./secrets`" rule: it writes only under `./secrets/nodes/`
   (firstboot-captured per-node Proxmox tokens). Nautobot's own mount of the
   directory stays read-only.
 - `certs/` is git-ignored — the keypair never leaves this host.
+- **Back up** `certs/` (fingerprint baked into prepared installer media),
+  `../secrets/nodes/` (tokens recoverable only by node reinstall), and the
+  `nautobot_answer_data` volume — none are covered by `backup.sh`. See the
+  main README's Answer Service section.
