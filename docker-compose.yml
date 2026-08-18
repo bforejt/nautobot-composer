@@ -368,8 +368,12 @@ services:
   # webhook (provisioning_state).  Full docs: nautobot-proxmox repo,
   # docs/baremetal-install.md.
   #
-  # Build context is the SIBLING nautobot-proxmox checkout (override with
-  # ANSWER_SERVICE_BUILD_CONTEXT if yours lives elsewhere).
+  # Build context defaults to the nautobot-proxmox repo's bmc/ directory
+  # FETCHED OVER GIT at build time (BuildKit git context — no local checkout
+  # needed; the daemon needs network + the repo to be fetchable).  Track a
+  # local sibling checkout instead by setting
+  # ANSWER_SERVICE_BUILD_CONTEXT=../nautobot-proxmox/bmc in .env (useful when
+  # developing the service or working offline).
   #
   # NOTE on ./secrets: the stack's rule is "nothing writes secrets" — this
   # service is the deliberate exception.  It writes ONLY under
@@ -379,7 +383,7 @@ services:
   answer-service:
     <<: *default-logging
     build:
-      context: ${ANSWER_SERVICE_BUILD_CONTEXT:-../nautobot-proxmox/bmc}
+      context: ${ANSWER_SERVICE_BUILD_CONTEXT:-https://github.com/bforejt/nautobot-proxmox.git#main:bmc}
       dockerfile: answer_service/Dockerfile
     container_name: answer-service
     profiles:

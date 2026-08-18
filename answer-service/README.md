@@ -7,7 +7,9 @@ renders a per-node Proxmox answer file, then captures the node's firstboot
 credential phone-home (per-node API token → text-file Secrets under
 `../secrets/nodes/` + a SecretsGroup) and the post-install webhook. Full
 architecture and runbook: `docs/baremetal-install.md` in the nautobot-proxmox
-repo (built from that repo's `bmc/` directory — a sibling checkout by default).
+repo (built from that repo's `bmc/` directory, fetched over git at build time
+by default — set `ANSWER_SERVICE_BUILD_CONTEXT=../nautobot-proxmox/bmc` in
+`.env` to build from a local sibling checkout instead).
 
 ## One-time setup
 
@@ -16,10 +18,10 @@ does steps 1–3 for you — it generates the TLS keypair and writes its
 `ANSWER_CERT_FINGERPRINT` into `.env`, generates a root password hash (and
 prints the root password once), auto-fills `ANSWER_PUBLIC_URL` from the host's
 primary IP and (on the lab tier) `ANSWER_NAUTOBOT_TOKEN` from the generated
-superuser token, and warns if the sibling nautobot-proxmox build context is
-missing. It never overwrites values you've already set. Review the two
-auto-filled values (override for multi-homed hosts / non-lab tokens), make
-sure the build context exists, then start it (step 4).
+superuser token, and reports the build context (the git-URL default needs no
+local checkout; a local-path override is checked for existence). It never
+overwrites values you've already set. Review the two auto-filled values
+(override for multi-homed hosts / non-lab tokens), then start it (step 4).
 
 Do it manually instead if you prefer:
 

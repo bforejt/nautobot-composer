@@ -14,7 +14,7 @@ Production-ready Docker Compose deployment for [Nautobot 3.x](https://docs.nauto
 | **GitLab CE** | `gitlab/gitlab-ce:latest` | Git repository server for config backups (opt-in) |
 | **Filebrowser** | `filebrowser/filebrowser:v2.63.17` | Authenticated web UI to upload/manage firmware images (opt-in — [Firmware Server](#firmware-server-optional)) |
 | **nginx** | Custom (based on `nginx:1.30-alpine`) | Read-only, network-restricted device-download endpoint for firmware (opt-in) |
-| **Answer Service** | Custom (built from a sibling [nautobot-proxmox](https://github.com/bforejt/nautobot-proxmox) checkout) | SoT-driven bare-metal Proxmox install engine (opt-in — [Answer Service](#answer-service-optional)) |
+| **Answer Service** | Custom (built from the [nautobot-proxmox](https://github.com/bforejt/nautobot-proxmox) repo via a git build context) | SoT-driven bare-metal Proxmox install engine (opt-in — [Answer Service](#answer-service-optional)) |
 | **tac_plus-ng** | Custom (built from a pinned [event-driven-servers](https://github.com/MarcJHuber/event-driven-servers) commit) | TACACS+ device AAA — AD-backed users, Nautobot-rendered device inventory (opt-in — [TACACS+ Server](#tacacs-server-optional)) |
 
 ## Prerequisites
@@ -677,7 +677,7 @@ The Register job validates the image **from the Celery worker**, so the URL must
 
 The SoT-backed engine of the [nautobot-proxmox](https://github.com/bforejt/nautobot-proxmox) bare-metal install loop, gated behind the `answer-service` Compose profile (off by default, like GitLab and Firmware). An installing machine's Proxmox auto-installer POSTs its identity (DMI serial, NIC MACs) here; the service matches it against Nautobot's **serial allowlist** and returns a per-node answer file, then captures the node's firstboot credential phone-home (its per-node Proxmox API token → text-file Secrets under `./secrets/nodes/` + a Secrets Group) and the post-install webhook (provisioning state). Machines Nautobot doesn't expect get a `403` and install nothing — which is what makes a standing install service safe to run.
 
-You need it only if you use the nautobot-proxmox bare-metal install track; the full architecture, security model, and runbook live in that repo's `docs/baremetal-install.md`. One-time setup (TLS keypair, `.env` values, root password hash) is in [`answer-service/README.md`](answer-service/README.md); it builds from a **sibling checkout** of nautobot-proxmox (`ANSWER_SERVICE_BUILD_CONTEXT` overrides the location).
+You need it only if you use the nautobot-proxmox bare-metal install track; the full architecture, security model, and runbook live in that repo's `docs/baremetal-install.md`. One-time setup (TLS keypair, `.env` values, root password hash) is in [`answer-service/README.md`](answer-service/README.md). The image builds from the nautobot-proxmox repo's `bmc/` directory **fetched over git at build time** (BuildKit git context — no local checkout required; the Docker daemon needs network). To build from a local checkout instead (developing the service, or offline), set `ANSWER_SERVICE_BUILD_CONTEXT=../nautobot-proxmox/bmc` in `.env`.
 
 **Start it** — persistent, same pattern as the firmware profile (comes back after reboot, covered by the systemd unit):
 
