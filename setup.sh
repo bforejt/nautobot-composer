@@ -1291,8 +1291,10 @@ if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
     fi
     # Fingerprint (SHA256 of the DER cert) -> .env, always matching the cert on
     # disk.  Same hex `sha256sum` produces (what prepare-install-iso expects).
+    # '|| ASVC_FP=""' keeps a failed pipeline (e.g. a corrupt cert) from
+    # aborting the script under 'set -e' — the guard below handles the empty case.
     ASVC_FP="$(openssl x509 -in "${ASVC_CERT_DIR}/answer-service.crt" -outform der 2>/dev/null \
-        | openssl dgst -sha256 2>/dev/null | awk '{print $NF}')"
+        | openssl dgst -sha256 2>/dev/null | awk '{print $NF}')" || ASVC_FP=""
     if [[ -n "$ASVC_FP" ]]; then
         if grep -qE '^ANSWER_CERT_FINGERPRINT=' "$ENV_FILE"; then
             set_env_var ANSWER_CERT_FINGERPRINT "$ASVC_FP"
@@ -1304,14 +1306,32 @@ if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
 
     # (3) Root password hash for installed bare-metal nodes.  Generate a strong
     # random one if absent (printed once below); replace the file to change it.
+    # SHA-512 crypt via `openssl passwd -6` — but macOS ships LibreSSL as
+    # /usr/bin/openssl, which lacks '-6', so probe first and fall back to a
+    # helper container (OpenSSL).  Build the hash in a variable and only write
+    # the file on success, so a failure never leaves a 0-byte hash that the
+    # '-s' guard would then treat as "absent" and re-attempt forever.
     ROOT_HASH_FILE="${SECRETS_HOST_DIR}/root_password_hash"
     if [[ -s "$ROOT_HASH_FILE" ]]; then
         echo "    root password hash present (secrets/root_password_hash) — leaving it untouched."
     else
         ASVC_ROOT_PW="$(generate_alphanum 20)"
-        openssl passwd -6 "$ASVC_ROOT_PW" > "$ROOT_HASH_FILE" 2>/dev/null
-        echo "    Generated a root password for INSTALLED NODES (hash in secrets/root_password_hash):"
-        echo "      root password: ${ASVC_ROOT_PW}   <- save this; replace the hash file to change it"
+        if openssl passwd -6 "probe" >/dev/null 2>&1; then
+            ASVC_ROOT_HASH="$(openssl passwd -6 "$ASVC_ROOT_PW" 2>/dev/null)" || ASVC_ROOT_HASH=""
+        else
+            # Host openssl (LibreSSL) can't do -6; hash inside an OpenSSL container.
+            ASVC_ROOT_HASH="$(docker run --rm -e PW="$ASVC_ROOT_PW" alpine sh -c \
+                'apk add --no-cache -q openssl >/dev/null 2>&1 && openssl passwd -6 "$PW"' 2>/dev/null)" \
+                || ASVC_ROOT_HASH=""
+        fi
+        if [[ "$ASVC_ROOT_HASH" == \$6\$* ]]; then
+            printf '%s\n' "$ASVC_ROOT_HASH" > "$ROOT_HASH_FILE"
+            echo "    Generated a root password for INSTALLED NODES (hash in secrets/root_password_hash):"
+            echo "      root password: ${ASVC_ROOT_PW}   <- save this; replace the hash file to change it"
+        else
+            echo "    WARNING: could not generate the node root password hash (openssl -6 unavailable)."
+            echo "             Create it manually, e.g.:  openssl passwd -6 > secrets/root_password_hash"
+        fi
     fi
 
     # Ownership: a non-root answer-service container in the stack GID can read
