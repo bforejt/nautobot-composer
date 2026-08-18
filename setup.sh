@@ -248,6 +248,13 @@ JOBS_HOST_DIR="${SCRIPT_DIR}/jobs"
 # bind-mounted read-only to /opt/nautobot/secrets (see secrets/README.md).
 SECRETS_HOST_DIR="${SCRIPT_DIR}/secrets"
 
+# Web TLS cert/key served by uWSGI, bind-mounted over the image's self-signed
+# pair (see certs/README.md).  setup.sh generates a self-signed fallback here
+# if the files are absent, so the bind mount source always exists.
+CERTS_HOST_DIR="${SCRIPT_DIR}/certs"
+CERT_FILE="${CERTS_HOST_DIR}/nautobot.crt"
+CERT_KEY="${CERTS_HOST_DIR}/nautobot.key"
+
 # Subdirectories Nautobot expects inside the media volume.
 MEDIA_SUBDIRS=(
     "devicetype-images"
@@ -1128,6 +1135,36 @@ docker run --rm \
         chown -R ${EUID:-$(id -u)}:${NAUTOBOT_GID} /secrets
         chmod 750 /secrets
         find /secrets -type f -exec chmod 640 {} +
+    "
+
+# Web TLS certificate: the nautobot service bind-mounts ./certs/nautobot.crt
+# and ./certs/nautobot.key over uWSGI's cert paths, so those two files MUST
+# exist before the stack starts.  Generate a self-signed pair if the user has
+# not supplied their own — the stack then serves HTTPS out of the box (with a
+# browser warning) and the operator can drop in a CA-issued cert later and
+# restart nautobot.  openssl is a setup.sh preflight requirement.
+mkdir -p "${CERTS_HOST_DIR}"
+if [[ -s "$CERT_FILE" && -s "$CERT_KEY" ]]; then
+    echo "  Web TLS cert present (certs/nautobot.crt) — leaving it untouched."
+else
+    echo "  Generating a self-signed web TLS cert (certs/nautobot.crt) ..."
+    openssl req -x509 -newkey rsa:2048 -nodes \
+        -keyout "$CERT_KEY" -out "$CERT_FILE" -days 825 \
+        -subj "/CN=localhost" \
+        -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2>/dev/null
+    echo "    Self-signed — browsers will warn.  Replace certs/nautobot.crt and"
+    echo "    certs/nautobot.key with a CA-issued cert, then: docker compose restart nautobot"
+fi
+# Ownership: host user can edit; container GID (999) can read the key via group
+# (key 640, cert 644).  Same helper-container pattern as ./secrets above.
+docker run --rm \
+    -v "${CERTS_HOST_DIR}:/certs" \
+    alpine sh -c "
+        chown -R ${EUID:-$(id -u)}:${NAUTOBOT_GID} /certs
+        chmod 750 /certs
+        [ -f /certs/nautobot.crt ] && chmod 644 /certs/nautobot.crt
+        [ -f /certs/nautobot.key ] && chmod 640 /certs/nautobot.key
+        true
     "
 
 echo "  Done."
