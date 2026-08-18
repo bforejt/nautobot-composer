@@ -12,11 +12,13 @@ repo (built from that repo's `bmc/` directory — a sibling checkout by default)
 ## One-time setup
 
 **The easy path:** `./setup.sh --with-answer-service` (from the project root)
-does steps 1 and 3 for you — it generates the TLS keypair and writes its
+does steps 1–3 for you — it generates the TLS keypair and writes its
 `ANSWER_CERT_FINGERPRINT` into `.env`, generates a root password hash (and
-prints the root password once), and warns if the sibling nautobot-proxmox
-build context is missing. It will **not** overwrite an existing keypair or
-hash. You still have to do step 2 (the two operator-supplied values) and make
+prints the root password once), auto-fills `ANSWER_PUBLIC_URL` from the host's
+primary IP and (on the lab tier) `ANSWER_NAUTOBOT_TOKEN` from the generated
+superuser token, and warns if the sibling nautobot-proxmox build context is
+missing. It never overwrites values you've already set. Review the two
+auto-filled values (override for multi-homed hosts / non-lab tokens), make
 sure the build context exists, then start it (step 4).
 
 Do it manually instead if you prefer:
