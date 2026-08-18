@@ -439,3 +439,22 @@ volumes:
   nautobot_firmware_db:
   # Answer service (profile: answer-service): one-time keys + install reports.
   nautobot_answer_data:
+
+networks:
+  # Pin the project's network to a fixed, non-conflicting subnet instead of
+  # letting Docker auto-carve a /16 from its default pool (172.17.0.0/16,
+  # 172.18.0.0/16, ...), which can collide with company address space.
+  # Default: 192.0.2.0/24 (RFC 5737 TEST-NET-1 — reserved for documentation,
+  # so it should never appear in real routed networks).  Docker assigns the
+  # gateway (.1) automatically; containers get .2 onward.  Override the range
+  # per-deployment with NAUTOBOT_NETWORK_SUBNET in .env.
+  #
+  # NOTE: changing this on an already-running stack requires recreating the
+  # network — `docker compose down && docker compose up -d` (data volumes are
+  # untouched).  This does NOT affect Docker's own docker0 bridge or other
+  # Compose projects; to move those too, set default-address-pools in the
+  # daemon's /etc/docker/daemon.json (see README: Networking).
+  default:
+    ipam:
+      config:
+        - subnet: ${NAUTOBOT_NETWORK_SUBNET:-192.0.2.0/24}
