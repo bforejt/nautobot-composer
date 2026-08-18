@@ -1167,6 +1167,99 @@ docker run --rm \
         true
     "
 
+# ---------------------------------------------------------------------------
+# Answer service one-time setup — only when its profile is enabled.
+#   (1) sibling nautobot-proxmox build context (warn only; can't clone it here)
+#   (2) TLS keypair -> answer-service/certs + SHA256 fingerprint -> .env
+#   (3) root password hash for installed nodes -> secrets/root_password_hash
+# The answer service can't start without ANSWER_NAUTOBOT_TOKEN / ANSWER_PUBLIC_URL
+# either — those are operator-supplied (a Nautobot token, a LAN URL), so we
+# can't generate them, but we flag them if missing.
+# ---------------------------------------------------------------------------
+if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
+    echo ""
+    echo "  Answer service enabled — preparing its prerequisites..."
+
+    # (1) Build context: the sibling nautobot-proxmox checkout.  setup.sh can't
+    # clone it (external repo), so warn rather than let `up --build` fail cryptically.
+    ASVC_CTX="$(env_value ANSWER_SERVICE_BUILD_CONTEXT)"
+    ASVC_CTX="${ASVC_CTX:-../nautobot-proxmox/bmc}"
+    case "$ASVC_CTX" in
+        /*) ASVC_CTX_ABS="$ASVC_CTX" ;;
+        *)  ASVC_CTX_ABS="${SCRIPT_DIR}/${ASVC_CTX}" ;;
+    esac
+    if [[ -f "${ASVC_CTX_ABS}/answer_service/Dockerfile" ]]; then
+        echo "    build context OK: ${ASVC_CTX}"
+    else
+        echo "    WARNING: build context '${ASVC_CTX}' not found (expected the sibling"
+        echo "             nautobot-proxmox checkout with answer_service/Dockerfile)."
+        echo "             'docker compose --profile answer-service up -d --build' will fail"
+        echo "             until you clone it there or set ANSWER_SERVICE_BUILD_CONTEXT in .env."
+    fi
+
+    # (2) TLS keypair (nodes pin it by fingerprint).  NEVER regenerate an
+    # existing cert — its fingerprint is baked into any prepared installer media.
+    ASVC_CERT_DIR="${SCRIPT_DIR}/answer-service/certs"
+    mkdir -p "$ASVC_CERT_DIR"
+    if [[ -s "${ASVC_CERT_DIR}/answer-service.crt" && -s "${ASVC_CERT_DIR}/answer-service.key" ]]; then
+        echo "    answer-service TLS cert present — leaving it untouched."
+    else
+        echo "    Generating answer-service TLS keypair (answer-service/certs) ..."
+        openssl req -x509 -newkey rsa:2048 -nodes -days 730 \
+            -subj "/CN=answer-service" \
+            -keyout "${ASVC_CERT_DIR}/answer-service.key" \
+            -out "${ASVC_CERT_DIR}/answer-service.crt" 2>/dev/null
+    fi
+    # Fingerprint (SHA256 of the DER cert) -> .env, always matching the cert on
+    # disk.  Same hex `sha256sum` produces (what prepare-install-iso expects).
+    ASVC_FP="$(openssl x509 -in "${ASVC_CERT_DIR}/answer-service.crt" -outform der 2>/dev/null \
+        | openssl dgst -sha256 2>/dev/null | awk '{print $NF}')"
+    if [[ -n "$ASVC_FP" ]]; then
+        if grep -qE '^ANSWER_CERT_FINGERPRINT=' "$ENV_FILE"; then
+            set_env_var ANSWER_CERT_FINGERPRINT "$ASVC_FP"
+        else
+            printf '\nANSWER_CERT_FINGERPRINT=%s\n' "$ASVC_FP" >> "$ENV_FILE"
+        fi
+        echo "    ANSWER_CERT_FINGERPRINT set in .env (${ASVC_FP:0:16}…)"
+    fi
+
+    # (3) Root password hash for installed bare-metal nodes.  Generate a strong
+    # random one if absent (printed once below); replace the file to change it.
+    ROOT_HASH_FILE="${SECRETS_HOST_DIR}/root_password_hash"
+    if [[ -s "$ROOT_HASH_FILE" ]]; then
+        echo "    root password hash present (secrets/root_password_hash) — leaving it untouched."
+    else
+        ASVC_ROOT_PW="$(generate_alphanum 20)"
+        openssl passwd -6 "$ASVC_ROOT_PW" > "$ROOT_HASH_FILE" 2>/dev/null
+        echo "    Generated a root password for INSTALLED NODES (hash in secrets/root_password_hash):"
+        echo "      root password: ${ASVC_ROOT_PW}   <- save this; replace the hash file to change it"
+    fi
+
+    # Ownership: a non-root answer-service container in the stack GID can read
+    # the key/hash (640) while the host user keeps edit access — like ./secrets.
+    docker run --rm \
+        -v "${ASVC_CERT_DIR}:/tls" \
+        -v "${SECRETS_HOST_DIR}:/secrets" \
+        alpine sh -c "
+            chown -R ${EUID:-$(id -u)}:${NAUTOBOT_GID} /tls
+            chmod 750 /tls
+            [ -f /tls/answer-service.crt ] && chmod 644 /tls/answer-service.crt
+            [ -f /tls/answer-service.key ] && chmod 640 /tls/answer-service.key
+            if [ -f /secrets/root_password_hash ]; then
+                chown ${EUID:-$(id -u)}:${NAUTOBOT_GID} /secrets/root_password_hash
+                chmod 640 /secrets/root_password_hash
+            fi
+            true
+        "
+
+    # These two are operator-supplied; the preflight blocks `up` if unset, but
+    # flag them now so it isn't a surprise later.
+    [[ -z "$(env_value ANSWER_NAUTOBOT_TOKEN)" ]] && \
+        echo "    ACTION NEEDED: set ANSWER_NAUTOBOT_TOKEN in .env (a Nautobot API token)."
+    [[ -z "$(env_value ANSWER_PUBLIC_URL)" ]] && \
+        echo "    ACTION NEEDED: set ANSWER_PUBLIC_URL in .env (e.g. https://<host-ip>:8800)."
+fi
+
 echo "  Done."
 
 # ---------------------------------------------------------------------------
