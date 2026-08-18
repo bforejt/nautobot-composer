@@ -1351,12 +1351,53 @@ if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
             true
         "
 
-    # These two are operator-supplied; the preflight blocks `up` if unset, but
-    # flag them now so it isn't a surprise later.
-    [[ -z "$(env_value ANSWER_NAUTOBOT_TOKEN)" ]] && \
-        echo "    ACTION NEEDED: set ANSWER_NAUTOBOT_TOKEN in .env (a Nautobot API token)."
-    [[ -z "$(env_value ANSWER_PUBLIC_URL)" ]] && \
-        echo "    ACTION NEEDED: set ANSWER_PUBLIC_URL in .env (e.g. https://<host-ip>:8800)."
+    # (4) ANSWER_PUBLIC_URL — derive a default from the host's primary IP,
+    # exactly like FIRMWARE_BASE_URL does (routing table, never DNS).  Only
+    # when empty: a value the operator set (multi-homed host, DNS name, or a
+    # mgmt VLAN the nodes live on) is never touched.  NOTE: this URL gets
+    # baked into prepared installer media, so a DHCP-ish host IP is a hazard —
+    # the printed line says how to override.
+    if [[ -z "$(env_value ANSWER_PUBLIC_URL)" ]]; then
+        if [[ -n "$PRIMARY_IP" ]]; then
+            ASVC_PORT="$(env_value ANSWER_PORT)"
+            ASVC_URL="https://${PRIMARY_IP}:${ASVC_PORT:-8800}"
+            if grep -qE '^ANSWER_PUBLIC_URL=' "$ENV_FILE"; then
+                set_env_var ANSWER_PUBLIC_URL "$ASVC_URL"
+            else
+                printf '\nANSWER_PUBLIC_URL=%s\n' "$ASVC_URL" >> "$ENV_FILE"
+            fi
+            echo "    ANSWER_PUBLIC_URL auto-detected: ${ASVC_URL}"
+            echo "      (host primary IP — override in .env for multi-homed hosts or a DNS"
+            echo "       name; it is baked into prepared installer media, so prefer a"
+            echo "       stable address)"
+        else
+            echo "    ACTION NEEDED: set ANSWER_PUBLIC_URL in .env (e.g. https://<host-ip>:8800)"
+            echo "                   — could not detect the host's primary IP."
+        fi
+    fi
+
+    # (5) ANSWER_NAUTOBOT_TOKEN — on the lab tier, default to the superuser
+    # API token setup.sh already generated (it's in the same .env, so this
+    # copies a value the operator can already see — no new exposure).  The
+    # value is written visibly so swapping in a scoped service-account token
+    # later is a one-line edit.  Non-lab tiers get no automatic admin token:
+    # least-privilege is worth the manual step there.
+    if [[ -z "$(env_value ANSWER_NAUTOBOT_TOKEN)" ]]; then
+        ASVC_TIER="$(env_value NAUTOBOT_ENV)"
+        ASVC_SU_TOKEN="$(env_value NAUTOBOT_SUPERUSER_API_TOKEN)"
+        if [[ "${ASVC_TIER:-lab}" == "lab" && -n "$ASVC_SU_TOKEN" ]]; then
+            if grep -qE '^ANSWER_NAUTOBOT_TOKEN=' "$ENV_FILE"; then
+                set_env_var ANSWER_NAUTOBOT_TOKEN "$ASVC_SU_TOKEN"
+            else
+                printf '\nANSWER_NAUTOBOT_TOKEN=%s\n' "$ASVC_SU_TOKEN" >> "$ENV_FILE"
+            fi
+            echo "    ANSWER_NAUTOBOT_TOKEN defaulted to the superuser API token (lab tier)."
+            echo "      For staging/production, replace it with a scoped service-account token."
+        else
+            echo "    ACTION NEEDED: set ANSWER_NAUTOBOT_TOKEN in .env (a Nautobot API token"
+            echo "                   — not auto-filled on the '${ASVC_TIER:-lab}' tier)."
+        fi
+    fi
 fi
 
 echo "  Done."
