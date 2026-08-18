@@ -1414,6 +1414,36 @@ if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# TACACS+ renderer token — only when its profile is enabled.  Same lab-tier
+# convention as ANSWER_NAUTOBOT_TOKEN above: default to the superuser API
+# token from this same .env so the Nautobot->tac_plus-ng render loop activates
+# without a manual step.  Without a token the daemon still runs fine (static
+# seed config; renderer idle), so the non-lab message is a note, not a warning.
+# ---------------------------------------------------------------------------
+if [[ ",${NEW_PROFILES}," == *,tacacs,* ]]; then
+    if [[ -z "$(env_value TACACS_NAUTOBOT_TOKEN)" ]]; then
+        TAC_TIER="$(env_value NAUTOBOT_ENV)"
+        TAC_SU_TOKEN="$(env_value NAUTOBOT_SUPERUSER_API_TOKEN)"
+        if [[ "${TAC_TIER:-lab}" == "lab" && -n "$TAC_SU_TOKEN" ]]; then
+            if grep -qE '^TACACS_NAUTOBOT_TOKEN=' "$ENV_FILE"; then
+                set_env_var TACACS_NAUTOBOT_TOKEN "$TAC_SU_TOKEN"
+            else
+                printf '\nTACACS_NAUTOBOT_TOKEN=%s\n' "$TAC_SU_TOKEN" >> "$ENV_FILE"
+            fi
+            echo ""
+            echo "  TACACS_NAUTOBOT_TOKEN defaulted to the superuser API token (lab tier) —"
+            echo "    the render loop will sync tagged devices from Nautobot.  For"
+            echo "    staging/production, replace it with a scoped read-only token."
+            echo "    A running tacacs container picks this up on: docker compose up -d tacacs"
+        else
+            echo ""
+            echo "  Note: TACACS_NAUTOBOT_TOKEN is unset (tier '${TAC_TIER:-lab}') — the TACACS+"
+            echo "        daemon serves its static seed config until you set a token in .env."
+        fi
+    fi
+fi
+
 echo "  Done."
 
 # ---------------------------------------------------------------------------
