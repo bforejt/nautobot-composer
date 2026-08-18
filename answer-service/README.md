@@ -11,6 +11,16 @@ repo (built from that repo's `bmc/` directory — a sibling checkout by default)
 
 ## One-time setup
 
+**The easy path:** `./setup.sh --with-answer-service` (from the project root)
+does steps 1 and 3 for you — it generates the TLS keypair and writes its
+`ANSWER_CERT_FINGERPRINT` into `.env`, generates a root password hash (and
+prints the root password once), and warns if the sibling nautobot-proxmox
+build context is missing. It will **not** overwrite an existing keypair or
+hash. You still have to do step 2 (the two operator-supplied values) and make
+sure the build context exists, then start it (step 4).
+
+Do it manually instead if you prefer:
+
 1. Generate the TLS keypair (from this directory):
 
    ```bash
@@ -26,13 +36,16 @@ repo (built from that repo's `bmc/` directory — a sibling checkout by default)
    installer media. **The fingerprint is baked into prepared ISOs/PXE
    artifacts — regenerating the cert means re-preparing them.**
 
-2. Set `ANSWER_NAUTOBOT_TOKEN` and `ANSWER_PUBLIC_URL` in `.env`
-   (see `env.example`).
+2. Set `ANSWER_NAUTOBOT_TOKEN` (a Nautobot API token) and `ANSWER_PUBLIC_URL`
+   (a LAN address nodes can reach, e.g. `https://<host-ip>:8800`) in `.env`
+   (see `env.example`). The service refuses to start until both are set — the
+   `answer-service-preflight` one-shot fails `up` with a clear message,
+   without wedging `down`/`config` the way a `${VAR:?}` guard would.
 
 3. Root password hash for installed nodes:
 
    ```bash
-   mkpasswd -m sha-512 > ../secrets/root_password_hash
+   mkpasswd -m sha-512 > ../secrets/root_password_hash   # or: openssl passwd -6
    ```
 
 4. Start it:

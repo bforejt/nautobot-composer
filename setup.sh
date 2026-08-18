@@ -36,6 +36,7 @@ DO_WAIT=false
 PROFILE_GITLAB=""
 PROFILE_FIRMWARE=""
 PROFILE_ANSWER_SERVICE=""
+PROFILE_TACACS=""
 # Explicit device-facing firmware base URL (--firmware-url).  Empty = derive
 # from the host's primary IP where needed (see FIRMWARE_BASE_URL handling).
 FIRMWARE_URL=""
@@ -89,6 +90,15 @@ while [[ $# -gt 0 ]]; do
             PROFILE_ANSWER_SERVICE="$new"
             shift
             ;;
+        --with-tacacs|--without-tacacs)
+            new=$([[ "$1" == --without-* ]] && echo off || echo on)
+            if [[ -n "$PROFILE_TACACS" && "$PROFILE_TACACS" != "$new" ]]; then
+                echo "ERROR: --with-tacacs and --without-tacacs are contradictory." >&2
+                exit 1
+            fi
+            PROFILE_TACACS="$new"
+            shift
+            ;;
         --firmware-url)
             FIRMWARE_URL="${2:-}"
             if [[ ! "$FIRMWARE_URL" =~ ^https?:// ]]; then
@@ -110,7 +120,7 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             cat <<'HELP'
 Usage: ./setup.sh [-v VERSION] [-p PYTHON] [--with-gitlab] [--with-firmware]
-                  [--with-answer-service] [--firmware-url URL]
+                  [--with-answer-service] [--with-tacacs] [--firmware-url URL]
                   [--build] [--start] [--wait] [--debug]
 
 Options:
@@ -129,6 +139,10 @@ Options:
                           nautobot-proxmox checkout — see README)
       --without-answer-service
                           Disable the answer-service add-on
+      --with-tacacs       Enable the TACACS+ device-AAA add-on (tac_plus-ng +
+                          Active Directory users + Nautobot-rendered device
+                          inventory — see README)
+      --without-tacacs    Disable the TACACS+ add-on
       --firmware-url URL  Device-facing firmware download base URL, written
                           to .env as FIRMWARE_BASE_URL and passed through to
                           the Nautobot worker (used by the nautobot-upgrades
@@ -570,6 +584,12 @@ else
     FIRMWARE_ADMIN_PASSWORD="$(generate_alphanum 24)"
     echo "    FIRMWARE_ADMIN_PW:  generated (${#FIRMWARE_ADMIN_PASSWORD} chars)"
 
+    # Default TACACS+ shared key for the optional tacacs add-on.  32 chars:
+    # RFC 8907 §10.5.1 requires servers to support keys of at least that
+    # length, and there is no reason to generate anything weaker.
+    TACACS_KEY="$(generate_alphanum 32)"
+    echo "    TACACS_DEFAULT_KEY: generated (${#TACACS_KEY} chars)"
+
     # Device-facing firmware URLs + matching server name (cert SAN).  80 /
     # 9443 are the FIRMWARE_HTTP_PORT / FIRMWARE_HTTPS_PORT defaults written
     # into the block below.  HTTP is the default URL (device TLS clients
@@ -620,7 +640,7 @@ NAUTOBOT_ENV=lab
 # this file for every 'docker compose' command run in this directory, so
 # profiles listed here start with a plain 'up -d', come back after reboot,
 # and are covered by the optional systemd unit.  Available: gitlab, firmware,
-# answer-service.
+# answer-service, tacacs.
 # Manage with './setup.sh --with-<profile>' (or --without-<profile>),
 # or edit directly, e.g.:  COMPOSE_PROFILES=gitlab,firmware
 COMPOSE_PROFILES=
@@ -705,6 +725,24 @@ FIRMWARE_ADMIN_PASSWORD=${FIRMWARE_ADMIN_PASSWORD}
 # Keep the host in sync with FIRMWARE_SERVER_NAME (cert SAN / server_name).
 FIRMWARE_BASE_URL=${FW_BASE_URL}
 FIRMWARE_BASE_URL_HTTPS=${FW_HTTPS_URL}
+
+# ---------------------------------------------------------------------------
+# TACACS+ Server (optional add-on — Compose profile: tacacs)
+# See env.example for documentation on each variable.  AD and Nautobot
+# settings are left empty for field configuration; until they are set the
+# daemon serves a safe seed config (no device can authenticate).
+# ---------------------------------------------------------------------------
+TACACS_DEFAULT_KEY=${TACACS_KEY}
+TACACS_OPEN_DEFAULT=true
+TACACS_AD_URLS=
+TACACS_AD_BASE_DN=
+TACACS_AD_BIND_DN=
+TACACS_AD_BIND_PASSWORD=
+TACACS_ADMIN_GROUP=
+TACACS_READONLY_GROUP=
+TACACS_NAUTOBOT_TOKEN=
+TACACS_DEVICE_TAG=tacacs
+TACACS_RENDER_INTERVAL=300
 EOF
 
     chmod 600 "$ENV_FILE"
@@ -816,6 +854,40 @@ elif [[ -f "$ENV_FILE" ]] && ! grep -qE '^FIRMWARE_ADMIN_PASSWORD=' "$ENV_FILE";
     printf '\nFIRMWARE_ADMIN_PASSWORD=%s\n' "$FW_ADMIN_PW" >> "$ENV_FILE"
     echo "  .env: FIRMWARE_ADMIN_PASSWORD generated and appended"
     echo "        Firmware UI admin password: ${FW_ADMIN_PW}  (user: see FIRMWARE_ADMIN_USER)"
+fi
+
+# Backward-compat: older .env files predate the optional TACACS+ add-on, and a
+# hand-created .env ("cp env.example .env") ships the block with the default
+# key commented out.  Same two-tier pattern as the firmware block above.
+if [[ -f "$ENV_FILE" ]] && ! grep -qE '^TACACS_OPEN_DEFAULT=' "$ENV_FILE"; then
+    # No tacacs block at all — append the whole thing with a generated key.
+    TACACS_KEY="$(generate_alphanum 32)"
+    cat >> "$ENV_FILE" <<EOF
+
+# ---------------------------------------------------------------------------
+# TACACS+ Server (optional add-on — Compose profile: tacacs)
+# See env.example for documentation on each variable.  AD and Nautobot
+# settings are left empty for field configuration; until they are set the
+# daemon serves a safe seed config (no device can authenticate).
+# ---------------------------------------------------------------------------
+TACACS_DEFAULT_KEY=${TACACS_KEY}
+TACACS_OPEN_DEFAULT=true
+TACACS_AD_URLS=
+TACACS_AD_BASE_DN=
+TACACS_AD_BIND_DN=
+TACACS_AD_BIND_PASSWORD=
+TACACS_ADMIN_GROUP=
+TACACS_READONLY_GROUP=
+TACACS_NAUTOBOT_TOKEN=
+TACACS_DEVICE_TAG=tacacs
+TACACS_RENDER_INTERVAL=300
+EOF
+    echo "  .env: tacacs block appended (default device key generated, 32 chars)"
+elif [[ -f "$ENV_FILE" ]] && ! grep -qE '^TACACS_DEFAULT_KEY=' "$ENV_FILE"; then
+    # Block exists but the key is still unset/commented — add just the key.
+    TACACS_KEY="$(generate_alphanum 32)"
+    printf '\nTACACS_DEFAULT_KEY=%s\n' "$TACACS_KEY" >> "$ENV_FILE"
+    echo "  .env: TACACS_DEFAULT_KEY generated and appended (32 chars)"
 fi
 
 # Backward-compat / override: FIRMWARE_BASE_URL — the device-facing download
@@ -1000,7 +1072,7 @@ if [[ "$FW_URL_TOUCHED" == true && -f "$ENV_FILE" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Compose profiles (opt-in add-ons: gitlab, firmware, answer-service)
+# Compose profiles (opt-in add-ons: gitlab, firmware, answer-service, tacacs)
 # ---------------------------------------------------------------------------
 # COMPOSE_PROFILES in .env is the persistent switch for the add-on services:
 # Compose reads it for every command run in this directory, so profiles
@@ -1026,6 +1098,7 @@ apply_profile_switch() {
 apply_profile_switch gitlab         "$PROFILE_GITLAB"
 apply_profile_switch firmware       "$PROFILE_FIRMWARE"
 apply_profile_switch answer-service "$PROFILE_ANSWER_SERVICE"
+apply_profile_switch tacacs         "$PROFILE_TACACS"
 
 if [[ "$NEW_PROFILES" != "$CURRENT_PROFILES" ]] || ! grep -qE '^COMPOSE_PROFILES=' "$ENV_FILE"; then
     if grep -qE '^COMPOSE_PROFILES=' "$ENV_FILE"; then
@@ -1036,7 +1109,7 @@ if [[ "$NEW_PROFILES" != "$CURRENT_PROFILES" ]] || ! grep -qE '^COMPOSE_PROFILES
         cat >> "$ENV_FILE" <<EOF
 
 # Comma-separated Compose profiles to activate persistently (gitlab, firmware,
-# answer-service).  Manage with './setup.sh --with-<profile> / --without-<profile>'.
+# answer-service, tacacs).  Manage with './setup.sh --with-<profile> / --without-<profile>'.
 COMPOSE_PROFILES=${NEW_PROFILES}
 EOF
     fi
@@ -1129,11 +1202,17 @@ docker run --rm \
 # helper container (root inside) so no host sudo is needed — same pattern
 # as the volume chown above; on macOS/Docker Desktop it is cosmetic.
 mkdir -p "${SECRETS_HOST_DIR}"
+# ./secrets/tacacs holds the optional TACACS+ per-device key files and is the
+# bind SOURCE for the tacacs service's scoped, read-only /secrets/tacacs mount
+# — create it now so Compose doesn't materialise a root-owned empty dir on
+# first `up`.
+mkdir -p "${SECRETS_HOST_DIR}/tacacs"
 docker run --rm \
     -v "${SECRETS_HOST_DIR}:/secrets" \
     alpine sh -c "
         chown -R ${EUID:-$(id -u)}:${NAUTOBOT_GID} /secrets
         chmod 750 /secrets
+        find /secrets -type d -exec chmod 750 {} +
         find /secrets -type f -exec chmod 640 {} +
     "
 
@@ -1166,6 +1245,99 @@ docker run --rm \
         [ -f /certs/nautobot.key ] && chmod 640 /certs/nautobot.key
         true
     "
+
+# ---------------------------------------------------------------------------
+# Answer service one-time setup — only when its profile is enabled.
+#   (1) sibling nautobot-proxmox build context (warn only; can't clone it here)
+#   (2) TLS keypair -> answer-service/certs + SHA256 fingerprint -> .env
+#   (3) root password hash for installed nodes -> secrets/root_password_hash
+# The answer service can't start without ANSWER_NAUTOBOT_TOKEN / ANSWER_PUBLIC_URL
+# either — those are operator-supplied (a Nautobot token, a LAN URL), so we
+# can't generate them, but we flag them if missing.
+# ---------------------------------------------------------------------------
+if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
+    echo ""
+    echo "  Answer service enabled — preparing its prerequisites..."
+
+    # (1) Build context: the sibling nautobot-proxmox checkout.  setup.sh can't
+    # clone it (external repo), so warn rather than let `up --build` fail cryptically.
+    ASVC_CTX="$(env_value ANSWER_SERVICE_BUILD_CONTEXT)"
+    ASVC_CTX="${ASVC_CTX:-../nautobot-proxmox/bmc}"
+    case "$ASVC_CTX" in
+        /*) ASVC_CTX_ABS="$ASVC_CTX" ;;
+        *)  ASVC_CTX_ABS="${SCRIPT_DIR}/${ASVC_CTX}" ;;
+    esac
+    if [[ -f "${ASVC_CTX_ABS}/answer_service/Dockerfile" ]]; then
+        echo "    build context OK: ${ASVC_CTX}"
+    else
+        echo "    WARNING: build context '${ASVC_CTX}' not found (expected the sibling"
+        echo "             nautobot-proxmox checkout with answer_service/Dockerfile)."
+        echo "             'docker compose --profile answer-service up -d --build' will fail"
+        echo "             until you clone it there or set ANSWER_SERVICE_BUILD_CONTEXT in .env."
+    fi
+
+    # (2) TLS keypair (nodes pin it by fingerprint).  NEVER regenerate an
+    # existing cert — its fingerprint is baked into any prepared installer media.
+    ASVC_CERT_DIR="${SCRIPT_DIR}/answer-service/certs"
+    mkdir -p "$ASVC_CERT_DIR"
+    if [[ -s "${ASVC_CERT_DIR}/answer-service.crt" && -s "${ASVC_CERT_DIR}/answer-service.key" ]]; then
+        echo "    answer-service TLS cert present — leaving it untouched."
+    else
+        echo "    Generating answer-service TLS keypair (answer-service/certs) ..."
+        openssl req -x509 -newkey rsa:2048 -nodes -days 730 \
+            -subj "/CN=answer-service" \
+            -keyout "${ASVC_CERT_DIR}/answer-service.key" \
+            -out "${ASVC_CERT_DIR}/answer-service.crt" 2>/dev/null
+    fi
+    # Fingerprint (SHA256 of the DER cert) -> .env, always matching the cert on
+    # disk.  Same hex `sha256sum` produces (what prepare-install-iso expects).
+    ASVC_FP="$(openssl x509 -in "${ASVC_CERT_DIR}/answer-service.crt" -outform der 2>/dev/null \
+        | openssl dgst -sha256 2>/dev/null | awk '{print $NF}')"
+    if [[ -n "$ASVC_FP" ]]; then
+        if grep -qE '^ANSWER_CERT_FINGERPRINT=' "$ENV_FILE"; then
+            set_env_var ANSWER_CERT_FINGERPRINT "$ASVC_FP"
+        else
+            printf '\nANSWER_CERT_FINGERPRINT=%s\n' "$ASVC_FP" >> "$ENV_FILE"
+        fi
+        echo "    ANSWER_CERT_FINGERPRINT set in .env (${ASVC_FP:0:16}…)"
+    fi
+
+    # (3) Root password hash for installed bare-metal nodes.  Generate a strong
+    # random one if absent (printed once below); replace the file to change it.
+    ROOT_HASH_FILE="${SECRETS_HOST_DIR}/root_password_hash"
+    if [[ -s "$ROOT_HASH_FILE" ]]; then
+        echo "    root password hash present (secrets/root_password_hash) — leaving it untouched."
+    else
+        ASVC_ROOT_PW="$(generate_alphanum 20)"
+        openssl passwd -6 "$ASVC_ROOT_PW" > "$ROOT_HASH_FILE" 2>/dev/null
+        echo "    Generated a root password for INSTALLED NODES (hash in secrets/root_password_hash):"
+        echo "      root password: ${ASVC_ROOT_PW}   <- save this; replace the hash file to change it"
+    fi
+
+    # Ownership: a non-root answer-service container in the stack GID can read
+    # the key/hash (640) while the host user keeps edit access — like ./secrets.
+    docker run --rm \
+        -v "${ASVC_CERT_DIR}:/tls" \
+        -v "${SECRETS_HOST_DIR}:/secrets" \
+        alpine sh -c "
+            chown -R ${EUID:-$(id -u)}:${NAUTOBOT_GID} /tls
+            chmod 750 /tls
+            [ -f /tls/answer-service.crt ] && chmod 644 /tls/answer-service.crt
+            [ -f /tls/answer-service.key ] && chmod 640 /tls/answer-service.key
+            if [ -f /secrets/root_password_hash ]; then
+                chown ${EUID:-$(id -u)}:${NAUTOBOT_GID} /secrets/root_password_hash
+                chmod 640 /secrets/root_password_hash
+            fi
+            true
+        "
+
+    # These two are operator-supplied; the preflight blocks `up` if unset, but
+    # flag them now so it isn't a surprise later.
+    [[ -z "$(env_value ANSWER_NAUTOBOT_TOKEN)" ]] && \
+        echo "    ACTION NEEDED: set ANSWER_NAUTOBOT_TOKEN in .env (a Nautobot API token)."
+    [[ -z "$(env_value ANSWER_PUBLIC_URL)" ]] && \
+        echo "    ACTION NEEDED: set ANSWER_PUBLIC_URL in .env (e.g. https://<host-ip>:8800)."
+fi
 
 echo "  Done."
 

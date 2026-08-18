@@ -387,13 +387,21 @@ services:
     depends_on:
       nautobot:
         condition: service_healthy
+      # Fail `up` fast (with a clear message) when the required .env values are
+      # missing — see answer-service-preflight below.
+      answer-service-preflight:
+        condition: service_completed_successfully
     # Deliberately NOT env_file: .env — the stack .env holds DB credentials
     # this service has no business seeing.  Explicit environment only.
     environment:
       NAUTOBOT_URL: "http://nautobot:8080"
-      NAUTOBOT_TOKEN: "${ANSWER_NAUTOBOT_TOKEN:?Set ANSWER_NAUTOBOT_TOKEN in .env (see env.example)}"
+      # Required at runtime, but NOT guarded with ${VAR:?} here: that guard
+      # fires on EVERY compose command (down/config/stop included), which
+      # wedges teardown when the token is unset.  answer-service-preflight
+      # enforces "must be set" only on `up` instead.
+      NAUTOBOT_TOKEN: "${ANSWER_NAUTOBOT_TOKEN:-}"
       # How NODES reach this service — LAN address, not localhost.
-      PUBLIC_URL: "${ANSWER_PUBLIC_URL:?Set ANSWER_PUBLIC_URL in .env (see env.example)}"
+      PUBLIC_URL: "${ANSWER_PUBLIC_URL:-}"
       # SHA256 of the TLS cert below; also baked into prepared installer
       # media via prepare-install-iso.sh --fingerprint.
       CERT_FINGERPRINT: "${ANSWER_CERT_FINGERPRINT:-}"
@@ -423,6 +431,109 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # --------------------------------------------------------------------------
+  # TACACS+ Server — device AAA (tac_plus-ng)  [profile: tacacs]
+  # --------------------------------------------------------------------------
+  # Opt-in: ./setup.sh --with-tacacs   (or: docker compose --profile tacacs up -d --build)
+  # Cisco devices authenticate/authorize against this daemon (RFC 8907, TCP/49).
+  # Users live in Active Directory (upstream's own Python MAVIS LDAP backend —
+  # binds as the user, so AD lockout/expiry policy applies; nested memberOf
+  # groups map to privilege profiles).  Device inventory and per-device keys
+  # are AUTHORED IN NAUTOBOT and rendered into the daemon's config by an
+  # in-container render loop (validated with `tac_plus-ng -P` before every
+  # reload — a bad render can never take AAA down; if Nautobot is unreachable
+  # the last-good config keeps serving).  See README: TACACS+ Server.
+  #
+  # Availability contract: deliberately NO depends_on — device login must not
+  # wait for (or die with) the rest of the stack.
+  tacacs:
+    <<: *default-logging
+    build:
+      context: ./tacacs
+      dockerfile: Dockerfile
+    container_name: nautobot-tacacs
+    profiles:
+      - tacacs
+    # Explicit environment only (answer-service precedent): this container has
+    # no business reading the stack-wide .env with DB credentials.
+    environment:
+      NAUTOBOT_URL: "http://nautobot:8080"
+      # Renderer activation (empty = static seed config, render loop idle).
+      TACACS_NAUTOBOT_TOKEN: "${TACACS_NAUTOBOT_TOKEN:-}"
+      TACACS_DEVICE_TAG: "${TACACS_DEVICE_TAG:-tacacs}"
+      TACACS_RENDER_INTERVAL: "${TACACS_RENDER_INTERVAL:-300}"
+      # Days of accounting/access logs to keep (date-bucketed); 0 = keep all.
+      TACACS_LOG_RETENTION_DAYS: "${TACACS_LOG_RETENTION_DAYS:-30}"
+      # RFC 8907 §10.5.1: servers MUST support keys of at least 32 chars —
+      # setup.sh generates 32.  The :? guard fails fast on a hand-made .env.
+      TACACS_DEFAULT_KEY: "${TACACS_DEFAULT_KEY:?Set TACACS_DEFAULT_KEY in .env (see env.example)}"
+      TACACS_OPEN_DEFAULT: "${TACACS_OPEN_DEFAULT:-true}"
+      # Active Directory (MAVIS LDAP backend) — all optional until field config.
+      TACACS_AD_URLS: "${TACACS_AD_URLS:-}"
+      LDAP_HOSTS: "${TACACS_AD_URLS:-}"
+      LDAP_BASE: "${TACACS_AD_BASE_DN:-}"
+      LDAP_USER: "${TACACS_AD_BIND_DN:-}"
+      LDAP_PASSWD: "${TACACS_AD_BIND_PASSWORD:-}"
+      # AD group -> privilege mapping (rendered into the ruleset).
+      TACACS_ADMIN_GROUP: "${TACACS_ADMIN_GROUP:-}"
+      TACACS_READONLY_GROUP: "${TACACS_READONLY_GROUP:-}"
+    volumes:
+      # Rendered config (last-good survives restarts) + accounting logs.
+      - nautobot_tacacs:/var/lib/tac_plus-ng
+      # Per-device PSK files ONLY (./secrets/tacacs/<device>.key — the files
+      # Nautobot Secret objects of the text-file provider point at).  Scoped to
+      # this subdir on purpose: the AAA daemon must not see the rest of
+      # ./secrets (answer-service node tokens, root password hash, etc.).
+      # Read-only.  setup.sh creates ./secrets/tacacs so the bind source exists.
+      - ./secrets/tacacs:/secrets/tacacs:ro
+    ports:
+      - "${TACACS_BIND_ADDRESS:-0.0.0.0}:${TACACS_PORT:-49}:49"
+    # Defense-in-depth: tac_plus-ng parses untrusted network packets, and this
+    # upstream has no config/CLI privilege-drop, so it runs as root (like the
+    # repo's other built images).  no-new-privileges blocks setuid escalation;
+    # deploy on an isolated management network (RFC 8907 §10.5) as documented.
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python3", "/usr/local/bin/tacacs-healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # Answer Service — preflight (fail `up` fast on missing config)  [profile: answer-service]
+  # --------------------------------------------------------------------------
+  # A one-shot that runs before answer-service and exits non-zero (blocking the
+  # start) if the required .env values are missing.  This replaces the
+  # ${ANSWER_NAUTOBOT_TOKEN:?} / ${ANSWER_PUBLIC_URL:?} interpolation guards,
+  # which fire on EVERY compose command — including `down`, `stop`, and
+  # `config` — and so would wedge teardown when the token isn't set yet.  A
+  # dependency one-shot only runs on `up`, so teardown is never blocked while
+  # `up` still fails immediately with a clear message.
+  answer-service-preflight:
+    image: alpine:3.22
+    container_name: answer-service-preflight
+    profiles:
+      - answer-service
+    environment:
+      ANSWER_NAUTOBOT_TOKEN: "${ANSWER_NAUTOBOT_TOKEN:-}"
+      ANSWER_PUBLIC_URL: "${ANSWER_PUBLIC_URL:-}"
+    command:
+      - sh
+      - -c
+      - |
+        missing=
+        [ -n "$$ANSWER_NAUTOBOT_TOKEN" ] || missing="$$missing ANSWER_NAUTOBOT_TOKEN"
+        [ -n "$$ANSWER_PUBLIC_URL" ]     || missing="$$missing ANSWER_PUBLIC_URL"
+        if [ -n "$$missing" ]; then
+          echo "answer-service: refusing to start — unset required .env value(s):$$missing" >&2
+          echo "  Set them in .env (see env.example / answer-service/README.md), then retry." >&2
+          exit 1
+        fi
+        echo "answer-service preflight OK"
+    restart: "no"
+
 volumes:
   nautobot_postgres_data:
     external: true
@@ -448,6 +559,8 @@ volumes:
   nautobot_firmware_db:
   # Answer service (profile: answer-service): one-time keys + install reports.
   nautobot_answer_data:
+  # TACACS+ server (profile: tacacs): rendered last-good config + accounting logs.
+  nautobot_tacacs:
 
 networks:
   # Pin the project's network to a fixed, non-conflicting subnet instead of
