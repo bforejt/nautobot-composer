@@ -15,6 +15,7 @@ Production-ready Docker Compose deployment for [Nautobot 3.x](https://docs.nauto
 | **Filebrowser** | `filebrowser/filebrowser:v2.63.17` | Authenticated web UI to upload/manage firmware images (opt-in — [Firmware Server](#firmware-server-optional)) |
 | **nginx** | Custom (based on `nginx:1.30-alpine`) | Read-only, network-restricted device-download endpoint for firmware (opt-in) |
 | **Answer Service** | Custom (built from a sibling [nautobot-proxmox](https://github.com/bforejt/nautobot-proxmox) checkout) | SoT-driven bare-metal Proxmox install engine (opt-in — [Answer Service](#answer-service-optional)) |
+| **tac_plus-ng** | Custom (built from a pinned [event-driven-servers](https://github.com/MarcJHuber/event-driven-servers) commit) | TACACS+ device AAA — AD-backed users, Nautobot-rendered device inventory (opt-in — [TACACS+ Server](#tacacs-server-optional)) |
 
 ## Prerequisites
 
@@ -58,11 +59,16 @@ The web UI is HTTPS-only: the plain-HTTP mapping was removed so host port 80 sta
 
 ```
 nautobot-composer/
-├── docker-compose.yml        # Service definitions (5 core services; opt-in GitLab + firmware profiles)
+├── docker-compose.yml        # Service definitions (5 core services; opt-in gitlab/firmware/answer-service/tacacs profiles)
 ├── docker-compose.override.prod.yml.example  # Production overlay (Caddy TLS + resource limits)
 ├── firmware/                 # Firmware server config (profile: firmware)
 │   ├── nginx/                #   Dockerfile, server template, first-run cert/allow-list scripts
 │   └── certs/                #   TLS material (generated/real; gitignored)
+├── tacacs/                   # TACACS+ server config (profile: tacacs)
+│   ├── Dockerfile            #   tac_plus-ng built from a pinned commit + AD/MAVIS backend
+│   ├── render.py             #   Nautobot -> tac_plus-ng config renderer (-P validate, SIGHUP)
+│   ├── entrypoint.py         #   supervises the daemon + render loop
+│   └── healthcheck.py        #   TCP/49 liveness probe
 ├── Dockerfile                # Custom Nautobot image with Apps
 ├── requirements.txt          # Symlink → requirements-{major}.x.txt (set by setup.sh)
 ├── requirements-3.x.txt      # App pins for Nautobot 3.x
@@ -387,6 +393,7 @@ Fresh installations via `./setup.sh` on a new host are unaffected — they just 
 | `gitlab_data` | `/var/opt/gitlab` | GitLab repositories and data (opt-in) |
 | `nautobot_firmware` | `/srv` | Firmware images — shared by the Filebrowser UI (read-write) and the nginx download endpoint (read-only). Opt-in |
 | `nautobot_firmware_db` | `/database` | Filebrowser's user/settings database, kept off the shared volume so it is never served. Opt-in |
+| `nautobot_tacacs` | `/var/lib/tac_plus-ng` | TACACS+ rendered last-good config + accounting logs. Opt-in |
 
 ## Custom Jobs
 
@@ -634,6 +641,82 @@ Ad-hoc instead: `docker compose --profile answer-service up -d --build`.
 - `answer-service/certs/` — the TLS keypair. Its SHA256 fingerprint is **baked into prepared installer ISOs/PXE artifacts**; losing the key means regenerating it *and* re-preparing all installer media.
 - `./secrets/nodes/` — per-node Proxmox API tokens captured at firstboot. Unlike the rest of `./secrets/` these are **not** a repopulatable cache: a lost token is recoverable only by reinstalling that node.
 - The `nautobot_answer_data` volume — one-time install keys and archived install reports (losing it mid-install strands that install; otherwise low-value).
+
+## TACACS+ Server (Optional)
+
+Device AAA (authentication, authorization, accounting) for Cisco and other network gear, gated behind the `tacacs` Compose profile (off by default, like the other add-ons). It runs [Marc Huber's **tac_plus-ng**](https://github.com/MarcJHuber/event-driven-servers) (RFC 8907, TCP/49) with two data sources wired to systems you already run:
+
+- **Users → Active Directory.** The daemon uses tac_plus-ng's own Python MAVIS/LDAP backend, which **binds to your DC as the logging-in user** — so AD password policy, lockout, and expiry are enforced by AD, not copied anywhere — and maps the user's (nested) `memberOf` groups to privilege profiles.
+- **Devices → Nautobot.** Devices carrying a Nautobot tag become TACACS+ clients, keyed by their primary IPv4. An in-container **render loop** turns Nautobot's device inventory (plus per-device keys from the Secrets framework) into the daemon's config, validates it with `tac_plus-ng -P`, and reloads on change via `SIGHUP`.
+
+> _This product includes software developed by Marc Huber (Marc.Huber@web.de)._ tac_plus-ng is built from a pinned commit in [`tacacs/Dockerfile`](tacacs/Dockerfile) under a BSD-style license with an acknowledgment clause; this notice satisfies it.
+
+### Design: Nautobot authors, the daemon consumes
+
+Nautobot is the single **authoring surface** for the slow-moving data (which devices exist, what key each uses); the rendered `tac_plus-ng` config is a **derived cache**, never hand-edited. This keeps normalization intact procedurally — the same way Golden Config's rendered device configs do — while decoupling availability:
+
+| Failure | Behavior |
+|---|---|
+| **Nautobot unreachable** | Render loop keeps the **last-good** config serving. Device logins are unaffected — your source of truth is never in the login path. |
+| **Active Directory unreachable** | MAVIS returns an error → device method lists fall through to `local` (ship the lockout-safe config below). |
+| **Bad/invalid render** | `tac_plus-ng -P` rejects the candidate; the daemon never loads a broken config. |
+| **First boot, nothing configured** | A safe **seed** config (no devices, no AD) starts healthy and accepts nobody until you configure it. |
+
+Authorization is **login + privilege level only** for now (priv-15 admin / priv-1 read-only). Per-command authorization is intentionally out of scope; it's a future ruleset change, not a redesign.
+
+### Start it
+
+```bash
+./setup.sh --with-tacacs        # generates TACACS_DEFAULT_KEY (32 chars), enables the profile
+docker compose up -d --build    # or: docker compose --profile tacacs up -d --build
+```
+
+Out of the box the container is **healthy but inert** — it serves the seed config until you fill in the field values below. That's deliberate: it's safe to stand up before it's configured.
+
+### Configure (field)
+
+All values live in `.env` (see `env.example` for the full list). None are needed to *start* the service; add them when you wire it to your environment:
+
+| Variable | What it does |
+|---|---|
+| `TACACS_AD_URLS` | Space-separated LDAP URL(s) of your DCs (use `ldaps://` — the user's password transits this). Empty ⇒ AD disabled, nobody can log in. |
+| `TACACS_AD_BASE_DN` / `TACACS_AD_BIND_DN` / `TACACS_AD_BIND_PASSWORD` | Search base and (optional) service-account bind for user/group lookups. |
+| `TACACS_ADMIN_GROUP` / `TACACS_READONLY_GROUP` | AD group names mapped to priv-15 / priv-1. |
+| `TACACS_NAUTOBOT_TOKEN` | Read-only Nautobot API token that activates the render loop. Empty ⇒ loop idle, static seed served. |
+| `TACACS_DEVICE_TAG` | Nautobot tag (default `tacacs`) marking devices to serve. Tag a device, and it's rendered as a client on the next reconcile. |
+| `TACACS_DEFAULT_KEY` | Fallback shared key (32 chars, generated by setup.sh). Per-device keys override it — drop `./secrets/tacacs/<device-name>.key` (the file a Nautobot **Secret** of provider *text file* points at). |
+| `TACACS_OPEN_DEFAULT` | `true` keeps a catch-all client so devices work through Docker's source-IP NAT (**always** the case on Docker Desktop). Set `false` only where the container sees real client IPs, to enforce RFC 8907 §10.5.2 per-client allow-listing. |
+
+Force an immediate reconcile instead of waiting for `TACACS_RENDER_INTERVAL`: `docker compose exec tacacs python3 /usr/local/lib/tacacs/render.py --oneshot` (preview with `--dry-run`).
+
+### Cisco IOS-XE — lockout-safe config
+
+Because a homelab AAA container *will* be down sometimes, method lists must fall back to `local`, and the console must stay usable. Minimal Cat 9300 example:
+
+```
+aaa new-model
+username breakglass privilege 15 secret <strong-local-password>
+tacacs server LAB
+ address ipv4 <docker-host-ip>
+ key <TACACS_DEFAULT_KEY or the device's per-device key>
+aaa group server tacacs+ TACGRP
+ server name LAB
+! 'local' engages only when the server ERRORs (unreachable), not on a reject:
+aaa authentication login default group TACGRP local
+aaa authentication login CONSOLE local
+aaa authorization exec default group TACGRP local
+line con 0
+ login authentication CONSOLE
+```
+
+Validate from the device with `test aaa group tacacs+ <user> <pass> legacy` and watch the server with `show tacacs`.
+
+### Notes & caveats
+
+- **TLS:** classic TACACS+ obfuscation is *not* encryption (RFC 8907 §10.1) — deploy on an isolated management network. TACACS+-over-TLS-1.3 (RFC 9887) exists and IOS-XE supports it from 17.18.1, but with early-field interop caveats; it's a later opt-in, not the default here.
+- **Deleting the device tag** (rather than untagging devices) makes Nautobot's GraphQL reject the query; the renderer treats that like an outage and **keeps the last-good config**. Untag devices to remove them cleanly; the tag going missing never blanks a working config.
+- **What to back up:** the `nautobot_tacacs` volume (rendered last-good config + accounting logs) and `./secrets/tacacs/` (per-device keys — associations are authored in Nautobot, but the key material lives only in these files).
+- **Reset:** `./reset.sh` removes the container, the `nautobot_tacacs` volume, and the built image along with the rest of the stack; `--keep-tacacs` spares them.
 
 ## Troubleshooting
 

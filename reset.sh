@@ -3,13 +3,13 @@
 # reset.sh — Fully reset the Nautobot Docker Compose project
 #
 # Stops all containers, removes ALL project volumes — the core stack plus the
-# opt-in GitLab, firmware, and answer-service add-ons — deletes the .env file,
-# and removes built images.  A full reset is the DEFAULT; use the --keep-*
-# switches to exclude an add-on's containers/volumes or the .env file from
-# the wipe.
+# opt-in GitLab, firmware, answer-service, and tacacs add-ons — deletes the
+# .env file, and removes built images.  A full reset is the DEFAULT; use the
+# --keep-* switches to exclude an add-on's containers/volumes or the .env file
+# from the wipe.
 #
-# THIS IS DESTRUCTIVE — all Nautobot, GitLab, firmware, and answer-service
-# data will be lost (minus whatever --keep-* flags exclude).
+# THIS IS DESTRUCTIVE — all Nautobot, GitLab, firmware, answer-service, and
+# tacacs data will be lost (minus whatever --keep-* flags exclude).
 #
 # Usage:
 #   ./reset.sh                  Interactive — prompts for confirmation
@@ -76,6 +76,12 @@ ANSWER_VOLUMES=(
     # bind mounts, which reset never touches.
     "${PROJECT_NAME}_nautobot_answer_data"
 )
+TACACS_VOLUMES=(
+    # TACACS+ server — opt-in profile (Compose-managed, project-prefixed).
+    # Rendered last-good config + accounting logs.  Per-device key files live
+    # in the ./secrets bind mount, which reset never touches.
+    "${PROJECT_NAME}_nautobot_tacacs"
+)
 # ALL_VOLUMES / KEPT_VOLUMES are assembled after argument parsing, once the
 # --keep-* switches are known.
 
@@ -89,6 +95,7 @@ ALLOW_PROD_DESTROY=false
 KEEP_GITLAB=false
 KEEP_FIRMWARE=false
 KEEP_ANSWER_SERVICE=false
+KEEP_TACACS=false
 KEEP_ENV=false
 DRY_RUN=false
 # Forwarded to setup.sh on --rebuild.  Empty arrays = use setup.sh defaults.
@@ -98,7 +105,7 @@ SETUP_PYTHON_ARGS=()
 usage() {
     cat <<EOF
 Usage: $0 [--force] [--keep-gitlab] [--keep-firmware] [--keep-answer-service]
-          [--keep-env] [--dry-run]
+          [--keep-tacacs] [--keep-env] [--dry-run]
           [--allow-production-destroy] [--rebuild [-v VERSION] [-p PYTHON]]
 
   --force                       Skip the standard 'type "reset" to confirm'
@@ -125,6 +132,20 @@ Usage: $0 [--force] [--keep-gitlab] [--keep-firmware] [--keep-answer-service]
                                 the kept container's ANSWER_NAUTOBOT_TOKEN is
                                 stale — set a fresh token in .env and restart
                                 the service after the rebuild.
+  --keep-tacacs                 Leave the TACACS+ add-on alone: its container
+                                keeps running, the nautobot_tacacs volume
+                                (rendered config, accounting logs) and built
+                                image survive.  Per-device key files live in
+                                the ./secrets/tacacs bind mount, never touched
+                                by reset either way.
+                                NOTE: without --keep-env, the regenerated .env
+                                gets a NEW TACACS_DEFAULT_KEY (the kept
+                                container keeps serving the OLD key until it is
+                                recreated — re-sync device configs first) AND a
+                                stale TACACS_NAUTOBOT_TOKEN, since the core
+                                reset wipes Nautobot's DB: set a fresh token in
+                                .env and recreate the container to resume
+                                Nautobot reconciliation.
   --keep-env                    Keep the .env file (secrets, passwords,
                                 COMPOSE_PROFILES selection).
   --dry-run                     Print what would be stopped/removed/kept and
@@ -179,6 +200,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --keep-answer-service)
             KEEP_ANSWER_SERVICE=true
+            shift
+            ;;
+        --keep-tacacs)
+            KEEP_TACACS=true
             shift
             ;;
         --keep-env)
@@ -255,6 +280,12 @@ else
     ALL_VOLUMES+=( "${ANSWER_VOLUMES[@]}" )
 fi
 
+if [[ "$KEEP_TACACS" == true ]]; then
+    KEPT_SUMMARY+=( "TACACS+ add-on (container, volume: ${TACACS_VOLUMES[*]}, built image)" )
+else
+    ALL_VOLUMES+=( "${TACACS_VOLUMES[@]}" )
+fi
+
 if [[ "$KEEP_ENV" == true ]]; then
     KEPT_SUMMARY+=( ".env file (secrets, COMPOSE_PROFILES)" )
 fi
@@ -268,6 +299,7 @@ DOWN_PROFILES=()
 [[ "$KEEP_GITLAB"         != true ]] && DOWN_PROFILES+=( gitlab )
 [[ "$KEEP_FIRMWARE"       != true ]] && DOWN_PROFILES+=( firmware )
 [[ "$KEEP_ANSWER_SERVICE" != true ]] && DOWN_PROFILES+=( answer-service )
+[[ "$KEEP_TACACS"         != true ]] && DOWN_PROFILES+=( tacacs )
 DOWN_PROFILES_CSV="$(IFS=,; echo "${DOWN_PROFILES[*]-}")"
 
 if [[ "$DRY_RUN" == true ]]; then
@@ -410,7 +442,8 @@ echo "[1/4] Stopping containers..."
 # would also remove kept-profile containers as strays) is only safe when
 # nothing is being kept.
 DOWN_ARGS=( -f "${SCRIPT_DIR}/docker-compose.yml" down )
-if [[ "$KEEP_GITLAB" != true && "$KEEP_FIRMWARE" != true && "$KEEP_ANSWER_SERVICE" != true ]]; then
+if [[ "$KEEP_GITLAB" != true && "$KEEP_FIRMWARE" != true \
+    && "$KEEP_ANSWER_SERVICE" != true && "$KEEP_TACACS" != true ]]; then
     DOWN_ARGS+=( --remove-orphans )
 fi
 if [[ "$DRY_RUN" == true ]]; then
@@ -494,7 +527,7 @@ if docker network inspect "$NETWORK" &>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
-# Remove project volumes (core + opt-in GitLab/firmware/answer-service)
+# Remove project volumes (core + opt-in GitLab/firmware/answer-service/tacacs)
 # ---------------------------------------------------------------------------
 
 echo ""
@@ -527,6 +560,11 @@ if [[ "$KEEP_ANSWER_SERVICE" == true ]]; then
         echo "  $vol — kept (--keep-answer-service)"
     done
 fi
+if [[ "$KEEP_TACACS" == true ]]; then
+    for vol in "${TACACS_VOLUMES[@]}"; do
+        echo "  $vol — kept (--keep-tacacs)"
+    done
+fi
 
 # ---------------------------------------------------------------------------
 # Remove .env file
@@ -542,6 +580,7 @@ SETUP_PROFILE_ARGS=()
 [[ ",${PREV_PROFILES}," == *,gitlab,*         ]] && SETUP_PROFILE_ARGS+=( --with-gitlab )
 [[ ",${PREV_PROFILES}," == *,firmware,*       ]] && SETUP_PROFILE_ARGS+=( --with-firmware )
 [[ ",${PREV_PROFILES}," == *,answer-service,* ]] && SETUP_PROFILE_ARGS+=( --with-answer-service )
+[[ ",${PREV_PROFILES}," == *,tacacs,*         ]] && SETUP_PROFILE_ARGS+=( --with-tacacs )
 
 if [[ "$KEEP_ENV" == true ]]; then
     echo "  $ENV_FILE — kept (--keep-env)"
@@ -585,6 +624,10 @@ while IFS=' ' read -r repo id; do
     fi
     if [[ "$KEEP_ANSWER_SERVICE" == true && "$repo" == "${PROJECT_NAME}-answer-service" ]]; then
         echo "  $repo — kept (--keep-answer-service)"
+        continue
+    fi
+    if [[ "$KEEP_TACACS" == true && "$repo" == "${PROJECT_NAME}-tacacs" ]]; then
+        echo "  $repo — kept (--keep-tacacs)"
         continue
     fi
     IMAGE_IDS+=( "$id" )
