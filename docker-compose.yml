@@ -387,13 +387,21 @@ services:
     depends_on:
       nautobot:
         condition: service_healthy
+      # Fail `up` fast (with a clear message) when the required .env values are
+      # missing — see answer-service-preflight below.
+      answer-service-preflight:
+        condition: service_completed_successfully
     # Deliberately NOT env_file: .env — the stack .env holds DB credentials
     # this service has no business seeing.  Explicit environment only.
     environment:
       NAUTOBOT_URL: "http://nautobot:8080"
-      NAUTOBOT_TOKEN: "${ANSWER_NAUTOBOT_TOKEN:?Set ANSWER_NAUTOBOT_TOKEN in .env (see env.example)}"
+      # Required at runtime, but NOT guarded with ${VAR:?} here: that guard
+      # fires on EVERY compose command (down/config/stop included), which
+      # wedges teardown when the token is unset.  answer-service-preflight
+      # enforces "must be set" only on `up` instead.
+      NAUTOBOT_TOKEN: "${ANSWER_NAUTOBOT_TOKEN:-}"
       # How NODES reach this service — LAN address, not localhost.
-      PUBLIC_URL: "${ANSWER_PUBLIC_URL:?Set ANSWER_PUBLIC_URL in .env (see env.example)}"
+      PUBLIC_URL: "${ANSWER_PUBLIC_URL:-}"
       # SHA256 of the TLS cert below; also baked into prepared installer
       # media via prepare-install-iso.sh --fingerprint.
       CERT_FINGERPRINT: "${ANSWER_CERT_FINGERPRINT:-}"
@@ -493,6 +501,38 @@ services:
       retries: 5
       start_period: 20s
     restart: unless-stopped
+
+  # Answer Service — preflight (fail `up` fast on missing config)  [profile: answer-service]
+  # --------------------------------------------------------------------------
+  # A one-shot that runs before answer-service and exits non-zero (blocking the
+  # start) if the required .env values are missing.  This replaces the
+  # ${ANSWER_NAUTOBOT_TOKEN:?} / ${ANSWER_PUBLIC_URL:?} interpolation guards,
+  # which fire on EVERY compose command — including `down`, `stop`, and
+  # `config` — and so would wedge teardown when the token isn't set yet.  A
+  # dependency one-shot only runs on `up`, so teardown is never blocked while
+  # `up` still fails immediately with a clear message.
+  answer-service-preflight:
+    image: alpine:3.22
+    container_name: answer-service-preflight
+    profiles:
+      - answer-service
+    environment:
+      ANSWER_NAUTOBOT_TOKEN: "${ANSWER_NAUTOBOT_TOKEN:-}"
+      ANSWER_PUBLIC_URL: "${ANSWER_PUBLIC_URL:-}"
+    command:
+      - sh
+      - -c
+      - |
+        missing=
+        [ -n "$$ANSWER_NAUTOBOT_TOKEN" ] || missing="$$missing ANSWER_NAUTOBOT_TOKEN"
+        [ -n "$$ANSWER_PUBLIC_URL" ]     || missing="$$missing ANSWER_PUBLIC_URL"
+        if [ -n "$$missing" ]; then
+          echo "answer-service: refusing to start — unset required .env value(s):$$missing" >&2
+          echo "  Set them in .env (see env.example / answer-service/README.md), then retry." >&2
+          exit 1
+        fi
+        echo "answer-service preflight OK"
+    restart: "no"
 
 volumes:
   nautobot_postgres_data:
