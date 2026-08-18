@@ -35,6 +35,7 @@ DO_WAIT=false
 # remove that profile from COMPOSE_PROFILES in .env (see [4/7]).
 PROFILE_GITLAB=""
 PROFILE_FIRMWARE=""
+PROFILE_ANSWER_SERVICE=""
 # Explicit device-facing firmware base URL (--firmware-url).  Empty = derive
 # from the host's primary IP where needed (see FIRMWARE_BASE_URL handling).
 FIRMWARE_URL=""
@@ -79,6 +80,15 @@ while [[ $# -gt 0 ]]; do
             PROFILE_FIRMWARE="$new"
             shift
             ;;
+        --with-answer-service|--without-answer-service)
+            new=$([[ "$1" == --without-* ]] && echo off || echo on)
+            if [[ -n "$PROFILE_ANSWER_SERVICE" && "$PROFILE_ANSWER_SERVICE" != "$new" ]]; then
+                echo "ERROR: --with-answer-service and --without-answer-service are contradictory." >&2
+                exit 1
+            fi
+            PROFILE_ANSWER_SERVICE="$new"
+            shift
+            ;;
         --firmware-url)
             FIRMWARE_URL="${2:-}"
             if [[ ! "$FIRMWARE_URL" =~ ^https?:// ]]; then
@@ -100,7 +110,8 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             cat <<'HELP'
 Usage: ./setup.sh [-v VERSION] [-p PYTHON] [--with-gitlab] [--with-firmware]
-                  [--firmware-url URL] [--build] [--start] [--wait] [--debug]
+                  [--with-answer-service] [--firmware-url URL]
+                  [--build] [--start] [--wait] [--debug]
 
 Options:
   -v, --version VERSION   Nautobot version (default: 3.1)
@@ -112,6 +123,12 @@ Options:
                           from .env; does not stop a running container)
       --with-firmware     Enable the firmware-server add-on (see README)
       --without-firmware  Disable the firmware-server add-on
+      --with-answer-service
+                          Enable the NFV answer-service add-on (bare-metal
+                          Proxmox install engine; needs the sibling
+                          nautobot-proxmox checkout — see README)
+      --without-answer-service
+                          Disable the answer-service add-on
       --firmware-url URL  Device-facing firmware download base URL, written
                           to .env as FIRMWARE_BASE_URL and passed through to
                           the Nautobot worker (used by the nautobot-upgrades
@@ -595,8 +612,9 @@ NAUTOBOT_ENV=lab
 # Comma-separated Compose profiles to activate persistently.  Compose reads
 # this file for every 'docker compose' command run in this directory, so
 # profiles listed here start with a plain 'up -d', come back after reboot,
-# and are covered by the optional systemd unit.  Available: gitlab, firmware.
-# Manage with './setup.sh --with-gitlab / --with-firmware' (or --without-*),
+# and are covered by the optional systemd unit.  Available: gitlab, firmware,
+# answer-service.
+# Manage with './setup.sh --with-<profile>' (or --without-<profile>),
 # or edit directly, e.g.:  COMPOSE_PROFILES=gitlab,firmware
 COMPOSE_PROFILES=
 
@@ -962,7 +980,7 @@ if [[ "$FW_URL_TOUCHED" == true && -f "$ENV_FILE" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Compose profiles (opt-in add-ons: gitlab, firmware)
+# Compose profiles (opt-in add-ons: gitlab, firmware, answer-service)
 # ---------------------------------------------------------------------------
 # COMPOSE_PROFILES in .env is the persistent switch for the add-on services:
 # Compose reads it for every command run in this directory, so profiles
@@ -985,8 +1003,9 @@ apply_profile_switch() {
     [[ "$mode" == "on" ]] && out+=("$name")
     NEW_PROFILES="${out[*]-}"
 }
-apply_profile_switch gitlab   "$PROFILE_GITLAB"
-apply_profile_switch firmware "$PROFILE_FIRMWARE"
+apply_profile_switch gitlab         "$PROFILE_GITLAB"
+apply_profile_switch firmware       "$PROFILE_FIRMWARE"
+apply_profile_switch answer-service "$PROFILE_ANSWER_SERVICE"
 
 if [[ "$NEW_PROFILES" != "$CURRENT_PROFILES" ]] || ! grep -qE '^COMPOSE_PROFILES=' "$ENV_FILE"; then
     if grep -qE '^COMPOSE_PROFILES=' "$ENV_FILE"; then
@@ -996,8 +1015,8 @@ if [[ "$NEW_PROFILES" != "$CURRENT_PROFILES" ]] || ! grep -qE '^COMPOSE_PROFILES
         # Backward-compat: append to an existing .env that predates profiles.
         cat >> "$ENV_FILE" <<EOF
 
-# Comma-separated Compose profiles to activate persistently (gitlab, firmware).
-# Manage with './setup.sh --with-gitlab / --with-firmware' (or --without-*).
+# Comma-separated Compose profiles to activate persistently (gitlab, firmware,
+# answer-service).  Manage with './setup.sh --with-<profile> / --without-<profile>'.
 COMPOSE_PROFILES=${NEW_PROFILES}
 EOF
     fi
