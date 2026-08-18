@@ -1259,22 +1259,36 @@ if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
     echo ""
     echo "  Answer service enabled — preparing its prerequisites..."
 
-    # (1) Build context: the sibling nautobot-proxmox checkout.  setup.sh can't
-    # clone it (external repo), so warn rather than let `up --build` fail cryptically.
+    # (1) Build context.  Default: the nautobot-proxmox repo fetched over git
+    # at build time (BuildKit git context — no local checkout needed).  A git
+    # URL can't be checked from here beyond noting it needs network at build
+    # time; a LOCAL override (path) is checked so `up --build` doesn't fail
+    # cryptically on a missing sibling checkout.
     ASVC_CTX="$(env_value ANSWER_SERVICE_BUILD_CONTEXT)"
-    ASVC_CTX="${ASVC_CTX:-../nautobot-proxmox/bmc}"
+    ASVC_CTX="${ASVC_CTX:-https://github.com/bforejt/nautobot-proxmox.git#main:bmc}"
     case "$ASVC_CTX" in
-        /*) ASVC_CTX_ABS="$ASVC_CTX" ;;
-        *)  ASVC_CTX_ABS="${SCRIPT_DIR}/${ASVC_CTX}" ;;
+        http://*|https://*|git@*|ssh://*)
+            echo "    build context: ${ASVC_CTX}"
+            echo "      (fetched over git at build time — the docker daemon needs network;"
+            echo "       set ANSWER_SERVICE_BUILD_CONTEXT=../nautobot-proxmox/bmc in .env to"
+            echo "       build from a local checkout instead)"
+            ;;
+        *)
+            case "$ASVC_CTX" in
+                /*) ASVC_CTX_ABS="$ASVC_CTX" ;;
+                *)  ASVC_CTX_ABS="${SCRIPT_DIR}/${ASVC_CTX}" ;;
+            esac
+            if [[ -f "${ASVC_CTX_ABS}/answer_service/Dockerfile" ]]; then
+                echo "    build context OK: ${ASVC_CTX}"
+            else
+                echo "    WARNING: build context '${ASVC_CTX}' not found (expected a"
+                echo "             nautobot-proxmox checkout with answer_service/Dockerfile)."
+                echo "             'docker compose --profile answer-service up -d --build' will fail"
+                echo "             until it exists — or unset ANSWER_SERVICE_BUILD_CONTEXT in .env"
+                echo "             to use the default git-URL context (no checkout needed)."
+            fi
+            ;;
     esac
-    if [[ -f "${ASVC_CTX_ABS}/answer_service/Dockerfile" ]]; then
-        echo "    build context OK: ${ASVC_CTX}"
-    else
-        echo "    WARNING: build context '${ASVC_CTX}' not found (expected the sibling"
-        echo "             nautobot-proxmox checkout with answer_service/Dockerfile)."
-        echo "             'docker compose --profile answer-service up -d --build' will fail"
-        echo "             until you clone it there or set ANSWER_SERVICE_BUILD_CONTEXT in .env."
-    fi
 
     # (2) TLS keypair (nodes pin it by fingerprint).  NEVER regenerate an
     # existing cert — its fingerprint is baked into any prepared installer media.
