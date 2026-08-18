@@ -481,6 +481,12 @@ services:
       # AD group -> privilege mapping (rendered into the ruleset).
       TACACS_ADMIN_GROUP: "${TACACS_ADMIN_GROUP:-}"
       TACACS_READONLY_GROUP: "${TACACS_READONLY_GROUP:-}"
+      # Break-glass local admin: a single LOCAL priv-15 user, always available
+      # (works when AD and Nautobot are both down).  Only the username is here;
+      # the password crypt hash lives in ./secrets/tacacs/breakglass.hash
+      # (a '$'-laden hash can't survive Compose interpolation in .env).  No
+      # hash file = no break-glass user rendered.  setup.sh generates both.
+      TACACS_BREAKGLASS_USER: "${TACACS_BREAKGLASS_USER:-breakglass}"
     volumes:
       # Rendered config (last-good survives restarts) + accounting logs.
       - nautobot_tacacs:/var/lib/tac_plus-ng
