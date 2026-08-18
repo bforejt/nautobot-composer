@@ -3,12 +3,13 @@
 # reset.sh — Fully reset the Nautobot Docker Compose project
 #
 # Stops all containers, removes ALL project volumes — the core stack plus the
-# opt-in GitLab and firmware add-ons — deletes the .env file, and removes built
-# images.  A full reset is the DEFAULT; use the --keep-* switches to exclude
-# an add-on's containers/volumes or the .env file from the wipe.
+# opt-in GitLab, firmware, and answer-service add-ons — deletes the .env file,
+# and removes built images.  A full reset is the DEFAULT; use the --keep-*
+# switches to exclude an add-on's containers/volumes or the .env file from
+# the wipe.
 #
-# THIS IS DESTRUCTIVE — all Nautobot, GitLab, and firmware data will be lost
-# (minus whatever --keep-* flags exclude).
+# THIS IS DESTRUCTIVE — all Nautobot, GitLab, firmware, and answer-service
+# data will be lost (minus whatever --keep-* flags exclude).
 #
 # Usage:
 #   ./reset.sh                  Interactive — prompts for confirmation
@@ -16,6 +17,8 @@
 #   ./reset.sh --rebuild        Reset and immediately re-run setup.sh
 #   ./reset.sh --keep-gitlab    Reset, but leave GitLab containers + data
 #   ./reset.sh --keep-firmware  Reset, but leave the firmware server + images
+#   ./reset.sh --keep-answer-service
+#                               Reset, but leave the answer service + data
 #   ./reset.sh --keep-env       Reset, but keep .env (secrets, profiles)
 #   ./reset.sh --dry-run        Show what would be removed/kept, change nothing
 # =============================================================================
@@ -35,8 +38,8 @@ ENV_FILE="${SCRIPT_DIR}/.env"
 # scope the image cleanup below.  Mirrors setup.sh: honor COMPOSE_PROJECT_NAME
 # if set, otherwise derive it from the directory name the same way Compose does.
 # IMPORTANT: if you ran the stack with a custom COMPOSE_PROJECT_NAME, set the
-# same value when running reset.sh, or the project-prefixed (firmware) volumes
-# below won't match and will be skipped.
+# same value when running reset.sh, or the project-prefixed (firmware,
+# answer-service) volumes below won't match and will be skipped.
 PROJECT_DIR="$(basename "$SCRIPT_DIR")"
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(echo "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]//g')}"
 
@@ -44,8 +47,8 @@ PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(echo "$PROJECT_DIR" | tr '[:upper:]' '[:
 # wipes the ENTIRE project by default and the --keep-* switches can exclude
 # an add-on's group.  Two naming schemes are in play:
 #   * external volumes (created by setup.sh) use their exact names, no prefix;
-#   * Compose-managed volumes (the firmware add-on) are project-prefixed by
-#     Compose, e.g. "<project>_nautobot_firmware".
+#   * Compose-managed volumes (the firmware and answer-service add-ons) are
+#     project-prefixed by Compose, e.g. "<project>_nautobot_firmware".
 # Volumes that don't exist are skipped (see phase [2/4]), so listing ones the
 # user never created is harmless.
 CORE_VOLUMES=(
@@ -66,6 +69,13 @@ FIRMWARE_VOLUMES=(
     "${PROJECT_NAME}_nautobot_firmware"
     "${PROJECT_NAME}_nautobot_firmware_db"
 )
+ANSWER_VOLUMES=(
+    # NFV answer service — opt-in profile (Compose-managed, project-prefixed).
+    # One-time install keys + archived install reports.  The service's other
+    # durable state (./secrets/nodes/, ./answer-service/certs/) lives in host
+    # bind mounts, which reset never touches.
+    "${PROJECT_NAME}_nautobot_answer_data"
+)
 # ALL_VOLUMES / KEPT_VOLUMES are assembled after argument parsing, once the
 # --keep-* switches are known.
 
@@ -78,6 +88,7 @@ REBUILD=false
 ALLOW_PROD_DESTROY=false
 KEEP_GITLAB=false
 KEEP_FIRMWARE=false
+KEEP_ANSWER_SERVICE=false
 KEEP_ENV=false
 DRY_RUN=false
 # Forwarded to setup.sh on --rebuild.  Empty arrays = use setup.sh defaults.
@@ -86,7 +97,8 @@ SETUP_PYTHON_ARGS=()
 
 usage() {
     cat <<EOF
-Usage: $0 [--force] [--keep-gitlab] [--keep-firmware] [--keep-env] [--dry-run]
+Usage: $0 [--force] [--keep-gitlab] [--keep-firmware] [--keep-answer-service]
+          [--keep-env] [--dry-run]
           [--allow-production-destroy] [--rebuild [-v VERSION] [-p PYTHON]]
 
   --force                       Skip the standard 'type "reset" to confirm'
@@ -102,6 +114,17 @@ Usage: $0 [--force] [--keep-gitlab] [--keep-firmware] [--keep-env] [--dry-run]
                                 regenerated .env gets a NEW firmware admin
                                 password that the surviving Filebrowser DB
                                 does not know — the OLD password stays valid.
+  --keep-answer-service         Leave the answer-service add-on alone: its
+                                container keeps running, the
+                                nautobot_answer_data volume (one-time install
+                                keys, install reports) and built image
+                                survive.  Host bind mounts (./secrets,
+                                ./answer-service/certs) are never touched by
+                                reset either way.
+                                NOTE: the core reset wipes Nautobot's DB, so
+                                the kept container's ANSWER_NAUTOBOT_TOKEN is
+                                stale — set a fresh token in .env and restart
+                                the service after the rebuild.
   --keep-env                    Keep the .env file (secrets, passwords,
                                 COMPOSE_PROFILES selection).
   --dry-run                     Print what would be stopped/removed/kept and
@@ -152,6 +175,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --keep-firmware)
             KEEP_FIRMWARE=true
+            shift
+            ;;
+        --keep-answer-service)
+            KEEP_ANSWER_SERVICE=true
             shift
             ;;
         --keep-env)
@@ -222,6 +249,12 @@ else
     ALL_VOLUMES+=( "${FIRMWARE_VOLUMES[@]}" )
 fi
 
+if [[ "$KEEP_ANSWER_SERVICE" == true ]]; then
+    KEPT_SUMMARY+=( "Answer-service add-on (container, volume: ${ANSWER_VOLUMES[*]}, built image)" )
+else
+    ALL_VOLUMES+=( "${ANSWER_VOLUMES[@]}" )
+fi
+
 if [[ "$KEEP_ENV" == true ]]; then
     KEPT_SUMMARY+=( ".env file (secrets, COMPOSE_PROFILES)" )
 fi
@@ -232,8 +265,9 @@ fi
 # are omitted — and because an explicit COMPOSE_PROFILES env var overrides the
 # .env file, `down` won't touch them even when .env enables them.
 DOWN_PROFILES=()
-[[ "$KEEP_GITLAB"   != true ]] && DOWN_PROFILES+=( gitlab )
-[[ "$KEEP_FIRMWARE" != true ]] && DOWN_PROFILES+=( firmware )
+[[ "$KEEP_GITLAB"         != true ]] && DOWN_PROFILES+=( gitlab )
+[[ "$KEEP_FIRMWARE"       != true ]] && DOWN_PROFILES+=( firmware )
+[[ "$KEEP_ANSWER_SERVICE" != true ]] && DOWN_PROFILES+=( answer-service )
 DOWN_PROFILES_CSV="$(IFS=,; echo "${DOWN_PROFILES[*]-}")"
 
 if [[ "$DRY_RUN" == true ]]; then
@@ -376,7 +410,7 @@ echo "[1/4] Stopping containers..."
 # would also remove kept-profile containers as strays) is only safe when
 # nothing is being kept.
 DOWN_ARGS=( -f "${SCRIPT_DIR}/docker-compose.yml" down )
-if [[ "$KEEP_GITLAB" != true && "$KEEP_FIRMWARE" != true ]]; then
+if [[ "$KEEP_GITLAB" != true && "$KEEP_FIRMWARE" != true && "$KEEP_ANSWER_SERVICE" != true ]]; then
     DOWN_ARGS+=( --remove-orphans )
 fi
 if [[ "$DRY_RUN" == true ]]; then
@@ -442,7 +476,7 @@ else
 fi
 
 # The Compose network can linger when `down` ran while opt-in profile
-# containers (gitlab/firmware) were still attached — `down` cannot remove an
+# containers (gitlab/firmware/answer-service) were still attached — `down` cannot remove an
 # in-use network, and the orphan sweep above removes containers but not
 # networks.  Now that all project containers are gone, remove it best-effort so
 # nothing is left behind.  Harmless if it was already removed or never created;
@@ -460,7 +494,7 @@ if docker network inspect "$NETWORK" &>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
-# Remove project volumes (core + opt-in GitLab/firmware)
+# Remove project volumes (core + opt-in GitLab/firmware/answer-service)
 # ---------------------------------------------------------------------------
 
 echo ""
@@ -488,6 +522,11 @@ if [[ "$KEEP_FIRMWARE" == true ]]; then
         echo "  $vol — kept (--keep-firmware)"
     done
 fi
+if [[ "$KEEP_ANSWER_SERVICE" == true ]]; then
+    for vol in "${ANSWER_VOLUMES[@]}"; do
+        echo "  $vol — kept (--keep-answer-service)"
+    done
+fi
 
 # ---------------------------------------------------------------------------
 # Remove .env file
@@ -500,8 +539,9 @@ echo "[3/4] Removing .env file..."
 # re-enable the same add-ons via setup.sh --with-* flags.
 PREV_PROFILES="$(grep -E '^COMPOSE_PROFILES=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ' || true)"
 SETUP_PROFILE_ARGS=()
-[[ ",${PREV_PROFILES}," == *,gitlab,*   ]] && SETUP_PROFILE_ARGS+=( --with-gitlab )
-[[ ",${PREV_PROFILES}," == *,firmware,* ]] && SETUP_PROFILE_ARGS+=( --with-firmware )
+[[ ",${PREV_PROFILES}," == *,gitlab,*         ]] && SETUP_PROFILE_ARGS+=( --with-gitlab )
+[[ ",${PREV_PROFILES}," == *,firmware,*       ]] && SETUP_PROFILE_ARGS+=( --with-firmware )
+[[ ",${PREV_PROFILES}," == *,answer-service,* ]] && SETUP_PROFILE_ARGS+=( --with-answer-service )
 
 if [[ "$KEEP_ENV" == true ]]; then
     echo "  $ENV_FILE — kept (--keep-env)"
@@ -530,16 +570,21 @@ echo ""
 echo "[4/4] Removing built images..."
 
 # Compose-built images follow the pattern: <project>-<service>.  This includes
-# the firmware-download image (built from firmware/nginx/Dockerfile), which has
-# no explicit image: name and so is tagged <project>-firmware-download — kept
-# back from the sweep under --keep-firmware, since a kept-but-imageless add-on
-# couldn't restart after an image prune.  PROJECT_NAME is computed once at the
-# top of this script.
+# the firmware-download and answer-service images (built from their in-repo
+# Dockerfiles), which have no explicit image: name and so are tagged
+# <project>-firmware-download / <project>-answer-service — each kept back from
+# the sweep under its --keep-* flag, since a kept-but-imageless add-on couldn't
+# restart after an image prune.  PROJECT_NAME is computed once at the top of
+# this script.
 IMAGE_IDS=()
 while IFS=' ' read -r repo id; do
     [[ -z "$id" ]] && continue
     if [[ "$KEEP_FIRMWARE" == true && "$repo" == "${PROJECT_NAME}-firmware-download" ]]; then
         echo "  $repo — kept (--keep-firmware)"
+        continue
+    fi
+    if [[ "$KEEP_ANSWER_SERVICE" == true && "$repo" == "${PROJECT_NAME}-answer-service" ]]; then
+        echo "  $repo — kept (--keep-answer-service)"
         continue
     fi
     IMAGE_IDS+=( "$id" )
