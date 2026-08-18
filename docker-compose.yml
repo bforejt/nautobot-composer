@@ -56,6 +56,15 @@ x-nautobot-volumes: &nautobot-volumes
     # if this line is removed (e.g. for shipping a standalone production
     # image).  Read-only: Nautobot never writes to its config file.
     - ./nautobot_config.py:/opt/nautobot/nautobot_config.py:ro
+    # Web TLS cert/key served by uWSGI on :8443 (see uwsgi.ini in the image:
+    # "https = 0.0.0.0:8443,<crt>,<key>").  These override the image's baked
+    # self-signed pair with the files in ./certs — drop a CA-issued cert there
+    # to remove the browser warning, then restart nautobot.  setup.sh generates
+    # a self-signed fallback so the mount source always exists.  See
+    # ./certs/README.md.  (Only the nautobot web service uses these; the celery
+    # containers share this anchor and simply ignore them.)
+    - ./certs/nautobot.crt:/opt/nautobot/nautobot.crt:ro
+    - ./certs/nautobot.key:/opt/nautobot/nautobot.key:ro
 
 services:
   # --------------------------------------------------------------------------
