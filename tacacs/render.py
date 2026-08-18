@@ -195,6 +195,19 @@ def build_config(devices, dry_run=False):
     readonly_group = env("TACACS_READONLY_GROUP")
     ad_urls = env("TACACS_AD_URLS")
     open_default = env("TACACS_OPEN_DEFAULT", "true").lower() == "true"
+    # Break-glass: a single LOCAL priv-15 user whose password is a crypt hash.
+    # It authenticates against that local hash regardless of AD/Nautobot state —
+    # a standing emergency account, present in every render (seed included).
+    # The hash lives in a FILE (secrets/tacacs/breakglass.hash), not .env: a
+    # crypt hash is full of '$', which Compose would mangle as interpolation.
+    # Only the (dollar-free) username comes from the environment.
+    bg_user = env("TACACS_BREAKGLASS_USER", "breakglass")
+    bg_hash = ""
+    try:
+        with open(os.path.join(SECRETS_DIR, "breakglass.hash")) as fh:
+            bg_hash = fh.read().strip()
+    except OSError:
+        pass
     health_pw = healthcheck_password(persist=not dry_run)
 
     out = []
@@ -279,6 +292,28 @@ def build_config(devices, dry_run=False):
     out.append(f"        password login = clear {cfg_quote(health_pw)}")
     out.append("    }")
     out.append("")
+    # Break-glass local admin.  Self-contained inline priv-15 profile so it does
+    # NOT depend on the AD groups/ruleset or a reachable Nautobot — it works even
+    # in the seed config.  The password is a crypt hash; tac_plus-ng does not
+    # expand the '$' in a quoted crypt value.  Only 'safe_ident' chars are
+    # allowed in the username so it can't inject config.
+    if bg_hash:
+        out.append("    # Break-glass local admin (always available; hash from secrets file).")
+        out.append(f"    user {safe_ident(bg_user)} {{")
+        out.append(f"        password login = crypt {cfg_quote(bg_hash)}")
+        out.append("        password pap = login")
+        out.append("        profile {")
+        out.append("            enable 15 = login")
+        out.append("            script {")
+        out.append("                if (service == shell) {")
+        out.append("                    if (cmd == \"\") { set priv-lvl = 15 permit }")
+        out.append("                    permit")
+        out.append("                }")
+        out.append("                deny")
+        out.append("            }")
+        out.append("        }")
+        out.append("    }")
+        out.append("")
     # `member == X` in ruleset scripts requires X to be a DECLARED group even
     # though actual membership arrives dynamically from AD via MAVIS TACMEMBER.
     for group in (admin_group, readonly_group):

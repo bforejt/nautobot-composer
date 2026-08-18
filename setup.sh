@@ -301,6 +301,26 @@ generate_alphanum() {
     echo "$result"
 }
 
+# SHA-512 crypt ($6$…) of $1, for password hashes we store instead of cleartext.
+# Uses host openssl when it supports `passwd -6` (OpenSSL); falls back to an
+# OpenSSL helper container on hosts whose openssl is LibreSSL (macOS ships it as
+# /usr/bin/openssl and it lacks -6).  Prints the hash on success, nothing on
+# failure — callers check for an empty result.
+sha512_crypt() {
+    local pw="$1" h
+    if openssl passwd -6 "probe" >/dev/null 2>&1; then
+        h="$(openssl passwd -6 "$pw" 2>/dev/null)" || h=""
+    else
+        h="$(docker run --rm -e PW="$pw" alpine sh -c \
+            'apk add --no-cache -q openssl >/dev/null 2>&1 && openssl passwd -6 "$PW"' 2>/dev/null)" || h=""
+    fi
+    [[ "$h" == \$6\$* ]] && printf '%s' "$h"
+    # Always succeed: callers detect failure via the empty result, and a bare
+    # `VAR="$(sha512_crypt …)"` assignment must not trip `set -e` when hashing
+    # fails (empty output would otherwise return non-zero from the `[[ ]]`).
+    return 0
+}
+
 generate_secret_key() {
     openssl rand -base64 48 2>/dev/null
 }
@@ -743,6 +763,7 @@ TACACS_READONLY_GROUP=
 TACACS_NAUTOBOT_TOKEN=
 TACACS_DEVICE_TAG=tacacs
 TACACS_RENDER_INTERVAL=300
+TACACS_BREAKGLASS_USER=breakglass
 EOF
 
     chmod 600 "$ENV_FILE"
@@ -881,6 +902,7 @@ TACACS_READONLY_GROUP=
 TACACS_NAUTOBOT_TOKEN=
 TACACS_DEVICE_TAG=tacacs
 TACACS_RENDER_INTERVAL=300
+TACACS_BREAKGLASS_USER=breakglass
 EOF
     echo "  .env: tacacs block appended (default device key generated, 32 chars)"
 elif [[ -f "$ENV_FILE" ]] && ! grep -qE '^TACACS_DEFAULT_KEY=' "$ENV_FILE"; then
@@ -1207,6 +1229,41 @@ mkdir -p "${SECRETS_HOST_DIR}"
 # — create it now so Compose doesn't materialise a root-owned empty dir on
 # first `up`.
 mkdir -p "${SECRETS_HOST_DIR}/tacacs"
+
+# TACACS+ break-glass local admin — only when the tacacs add-on is enabled.
+# A single LOCAL priv-15 account whose password is a SHA-512 crypt hash in
+# ./secrets/tacacs/breakglass.hash.  The renderer emits it into every config
+# (seed included), so it authenticates against that local hash even when AD
+# and Nautobot are both down — a standing emergency login.  The hash lives in
+# a FILE, not .env: a '$'-laden crypt hash cannot survive Compose's ${...}
+# interpolation.  Generated once with a strong random password (printed
+# below); replace the file (openssl passwd -6 …) to rotate it.  All tiers —
+# emergency device access is wanted everywhere.  The recursive chown below
+# then gives the file the same 640/stack-GID ownership as the rest of secrets.
+if [[ ",${NEW_PROFILES}," == *,tacacs,* ]]; then
+    # The username has no '$', so it is safe in .env (Compose reads it there).
+    if ! grep -qE '^TACACS_BREAKGLASS_USER=' "$ENV_FILE"; then
+        printf '\nTACACS_BREAKGLASS_USER=breakglass\n' >> "$ENV_FILE"
+    fi
+    BG_HASH_FILE="${SECRETS_HOST_DIR}/tacacs/breakglass.hash"
+    if [[ -s "$BG_HASH_FILE" ]]; then
+        echo "  TACACS+ break-glass hash present (secrets/tacacs/breakglass.hash) — leaving it untouched."
+    else
+        BG_USER="$(env_value TACACS_BREAKGLASS_USER)"; BG_USER="${BG_USER:-breakglass}"
+        BG_PW="$(generate_alphanum 20)"
+        BG_HASH="$(sha512_crypt "$BG_PW")"
+        if [[ -n "$BG_HASH" ]]; then
+            printf '%s\n' "$BG_HASH" > "$BG_HASH_FILE"
+            echo "  Generated a TACACS+ break-glass local admin (works even when AD/Nautobot are down):"
+            echo "    username: ${BG_USER}"
+            echo "    password: ${BG_PW}   <- save this; only the hash is stored (replace the file to rotate)"
+        else
+            echo "  WARNING: could not hash the TACACS+ break-glass password (openssl -6 unavailable)."
+            echo "           Create it manually, e.g.:  openssl passwd -6 > secrets/tacacs/breakglass.hash"
+        fi
+    fi
+fi
+
 docker run --rm \
     -v "${SECRETS_HOST_DIR}:/secrets" \
     alpine sh -c "
@@ -1320,25 +1377,15 @@ if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
 
     # (3) Root password hash for installed bare-metal nodes.  Generate a strong
     # random one if absent (printed once below); replace the file to change it.
-    # SHA-512 crypt via `openssl passwd -6` — but macOS ships LibreSSL as
-    # /usr/bin/openssl, which lacks '-6', so probe first and fall back to a
-    # helper container (OpenSSL).  Build the hash in a variable and only write
-    # the file on success, so a failure never leaves a 0-byte hash that the
-    # '-s' guard would then treat as "absent" and re-attempt forever.
+    # Only write the file when hashing succeeds, so a failure never leaves a
+    # 0-byte hash that the '-s' guard would then treat as "absent" forever.
     ROOT_HASH_FILE="${SECRETS_HOST_DIR}/root_password_hash"
     if [[ -s "$ROOT_HASH_FILE" ]]; then
         echo "    root password hash present (secrets/root_password_hash) — leaving it untouched."
     else
         ASVC_ROOT_PW="$(generate_alphanum 20)"
-        if openssl passwd -6 "probe" >/dev/null 2>&1; then
-            ASVC_ROOT_HASH="$(openssl passwd -6 "$ASVC_ROOT_PW" 2>/dev/null)" || ASVC_ROOT_HASH=""
-        else
-            # Host openssl (LibreSSL) can't do -6; hash inside an OpenSSL container.
-            ASVC_ROOT_HASH="$(docker run --rm -e PW="$ASVC_ROOT_PW" alpine sh -c \
-                'apk add --no-cache -q openssl >/dev/null 2>&1 && openssl passwd -6 "$PW"' 2>/dev/null)" \
-                || ASVC_ROOT_HASH=""
-        fi
-        if [[ "$ASVC_ROOT_HASH" == \$6\$* ]]; then
+        ASVC_ROOT_HASH="$(sha512_crypt "$ASVC_ROOT_PW")"
+        if [[ -n "$ASVC_ROOT_HASH" ]]; then
             printf '%s\n' "$ASVC_ROOT_HASH" > "$ROOT_HASH_FILE"
             echo "    Generated a root password for INSTALLED NODES (hash in secrets/root_password_hash):"
             echo "      root password: ${ASVC_ROOT_PW}   <- save this; replace the hash file to change it"
