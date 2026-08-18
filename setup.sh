@@ -624,6 +624,10 @@ NAUTOBOT_VERSION=${NAUTOBOT_IMAGE_TAG}
 
 NAUTOBOT_SECRET_KEY=${SECRET_KEY}
 NAUTOBOT_ALLOWED_HOSTS=*
+# Docker network subnet for this project (see env.example / README: Networking).
+# 192.0.2.0/24 is RFC 5737 TEST-NET-1 — reserved, so it won't clash with real
+# company routing the way Docker's default 172.x pool can.
+NAUTOBOT_NETWORK_SUBNET=192.0.2.0/24
 NAUTOBOT_DEBUG=False
 NAUTOBOT_LOG_LEVEL=INFO
 NAUTOBOT_METRICS_ENABLED=True
@@ -743,6 +747,15 @@ fi
 if [[ -f "$ENV_FILE" ]] && ! grep -qE '^NAUTOBOT_ENV=' "$ENV_FILE"; then
     printf '\nNAUTOBOT_ENV=lab\n' >> "$ENV_FILE"
     echo "  .env: NAUTOBOT_ENV appended (lab) — change to staging/production for non-lab use"
+fi
+
+# Backward-compat: older .env files predate the pinned Docker network subnet.
+# Append the default; the compose file also defaults it via :- so this is just
+# for discoverability.  Never overwrite a subnet the user has customised.
+if [[ -f "$ENV_FILE" ]] && ! grep -qE '^NAUTOBOT_NETWORK_SUBNET=' "$ENV_FILE"; then
+    printf '\nNAUTOBOT_NETWORK_SUBNET=192.0.2.0/24\n' >> "$ENV_FILE"
+    echo "  .env: NAUTOBOT_NETWORK_SUBNET appended (192.0.2.0/24)"
+    echo "        Applying to a RUNNING stack needs: docker compose down && docker compose up -d"
 fi
 
 # Backward-compat: older .env files predate the optional firmware server, and a
