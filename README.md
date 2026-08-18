@@ -395,6 +395,35 @@ Fresh installations via `./setup.sh` on a new host are unaffected — they just 
 | `nautobot_firmware_db` | `/database` | Filebrowser's user/settings database, kept off the shared volume so it is never served. Opt-in |
 | `nautobot_tacacs` | `/var/lib/tac_plus-ng` | TACACS+ rendered last-good config + accounting logs. Opt-in |
 
+## Networking
+
+By default Docker auto-carves a `/16` for each Compose project's network from its built-in pool (`172.17.0.0/16`, `172.18.0.0/16`, …). Those ranges frequently overlap with corporate address space, which breaks routing to anything the containers need to reach. This project therefore **pins its network to a fixed subnet** via `NAUTOBOT_NETWORK_SUBNET` in `.env`:
+
+```bash
+# .env — default
+NAUTOBOT_NETWORK_SUBNET=192.0.2.0/24
+```
+
+`192.0.2.0/24` is **RFC 5737 TEST-NET-1**, reserved for documentation and never routed on real networks, so it won't collide with production address space. Docker assigns the gateway (`.1`) automatically and containers get `.2` onward — ~254 addresses, far more than this stack needs. Set any range your environment leaves free (e.g. `NAUTOBOT_NETWORK_SUBNET=10.123.45.0/24`).
+
+**Applying a change:** a network's subnet can't be edited in place, so on an already-running stack you must recreate the network. Data volumes are untouched:
+
+```bash
+docker compose down && docker compose up -d
+```
+
+**Scope:** this controls only *this project's* network. It does **not** change Docker's own `docker0` bridge (`172.17.0.0/16`) or the networks of other Compose projects on the host. To move **everything** the daemon creates off the `172.x` defaults, set a pool in `/etc/docker/daemon.json` and restart Docker:
+
+```json
+{
+  "default-address-pools": [
+    { "base": "192.0.2.0/24", "size": 24 }
+  ]
+}
+```
+
+That's a host-wide, non-repo change affecting every project and the default bridge; the per-project `NAUTOBOT_NETWORK_SUBNET` above is usually what you want, and the two can coexist (the explicit per-project subnet always wins for this stack).
+
 ## Custom Jobs
 
 The `./jobs/` directory is bind-mounted into the Nautobot, Celery worker, and Celery beat containers at `/opt/nautobot/jobs` (the default `JOBS_ROOT`). Drop Python files there to add custom [Nautobot Jobs](https://docs.nautobot.com/projects/core/en/stable/user-guide/platform-functionality/jobs/).
