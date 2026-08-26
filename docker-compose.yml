@@ -416,6 +416,12 @@ services:
       NAUTOBOT_SECRETS_PATH: /opt/nautobot/secrets/nodes
       DOMAIN: "${ANSWER_DOMAIN:-nfv.lab}"
       TIMEZONE: "${ANSWER_TIMEZONE:-America/Chicago}"
+      # Media forge (OFF by default — enable only on the lab/build instance
+      # that prepares installer media; nautobot-proxmox decision #44):
+      ADMIN_ENABLED: "${ANSWER_ADMIN_ENABLED:-false}"
+      ADMIN_TOKEN: "${ANSWER_ADMIN_TOKEN:-}"
+      FIRMWARE_PUBLISH_DIR: "${ANSWER_FIRMWARE_PUBLISH_DIR:-}"
+      FIRMWARE_BASE_URL: "${ANSWER_FIRMWARE_BASE_URL:-}"
     volumes:
       # One-time-key store + install-report archive.  Losing it mid-install
       # strands a node between answer and phone-home — keep it durable.
@@ -425,6 +431,9 @@ services:
       # into prepared installer media — regenerating the cert means
       # re-preparing the ISOs/PXE artifacts).  Git-ignored.
       - ./answer-service/certs:/tls
+      # Writable firmware storage for the media forge's publish step. Inert
+      # unless ANSWER_FIRMWARE_PUBLISH_DIR points at it (/firmware-publish).
+      - nautobot_firmware:/firmware-publish
     ports:
       - "${ANSWER_BIND_ADDRESS:-0.0.0.0}:${ANSWER_PORT:-8800}:8800"
     healthcheck:
