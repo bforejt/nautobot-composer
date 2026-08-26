@@ -256,7 +256,7 @@ Then `docker compose restart nautobot celery_worker celery_beat` (config is bind
 
 ### Backup & Restore
 
-Use `backup.sh` and `restore.sh` to manage database and media backups. Files are saved to `./backups/` by default.
+Use `backup.sh` and `restore.sh` to manage database and media backups. Files are saved to `./backups/` by default. A database restore briefly stops the *running* Nautobot app containers (Postgres refuses to drop a database with live sessions — celery beat holds one even at idle) and restarts exactly the ones it stopped afterward.
 
 ```bash
 # Back up everything (database + media)
@@ -272,7 +272,7 @@ Use `backup.sh` and `restore.sh` to manage database and media backups. Files are
 ./restore.sh
 
 # Restore a specific database backup
-./restore.sh -t db --db-file backups/nautobot_db_2026-04-02_143000.sql.gz
+./restore.sh -t db --db-file backups/nautobot_db_v2.4.30_2026-04-02_143000.sql.gz
 ```
 
 Run `./backup.sh --help` or `./restore.sh --help` for all options.
