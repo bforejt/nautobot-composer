@@ -5,6 +5,10 @@
 # By default, finds the most recent backup files in ./backups/.
 # Use --db-file / --media-file to specify exact files.
 #
+# A database restore stops the RUNNING Nautobot app containers (nautobot,
+# celery worker/beat) for the drop/load, then restarts exactly the ones it
+# stopped.  Containers that were already down stay down.
+#
 # Usage:
 #   ./restore.sh                               Restore latest db + media
 #   ./restore.sh -t db                         Restore latest database only
@@ -12,7 +16,18 @@
 #   ./restore.sh -d /mnt/backups               Search a custom directory
 # =============================================================================
 set -euo pipefail
-trap 'echo "ERROR: restore failed at line $LINENO (exit $?)." >&2' ERR
+
+# The ERR trap does not fire when the script dies on Ctrl-C, and an interrupt
+# during the long SQL load is exactly when the app is down — so INT/TERM get
+# their own trap and both share this hint.
+restart_hint() {
+    if [[ "${APP_STOPPED:-false}" == true ]]; then
+        echo "NOTE: the Nautobot app containers were stopped for this restore — restart with:" >&2
+        echo "  docker compose --project-directory \"${SCRIPT_DIR}\" up -d" >&2
+    fi
+}
+trap 'echo "ERROR: restore failed at line $LINENO (exit $?)." >&2; restart_hint' ERR
+trap 'echo "Interrupted." >&2; restart_hint; exit 130' INT TERM
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -26,6 +41,8 @@ MEDIA_FILE=""
 MEDIA_VOLUME="nautobot_media"
 NAUTOBOT_UID=999
 NAUTOBOT_GID=999
+APP_STOPPED=false
+RUNNING_APP=""
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -61,6 +78,9 @@ while [[ $# -gt 0 ]]; do
             echo "Supported formats:"
             echo "  Database: .sql.gz (gzipped) or .sql (plain)"
             echo "  Media:    .tar.gz or .tgz"
+            echo ""
+            echo "A database restore stops the running Nautobot app containers for"
+            echo "the drop/load and restarts the ones it stopped when finished."
             echo ""
             echo "When no file is specified, the most recent matching backup in"
             echo "the backup directory is used automatically."
@@ -223,6 +243,30 @@ echo ""
 if [[ "$RESTORE_TYPE" == "db" || "$RESTORE_TYPE" == "all" ]]; then
     echo "Restoring database from ${DB_FILE}..."
 
+    # Postgres refuses to DROP a database that has live sessions, and the
+    # stack holds one even at idle (celery beat's scheduler polls the DB).
+    # Quiesce the app containers, then clear any straggler sessions, or the
+    # drop below fails with "database is being accessed by other users".
+    # Only the containers that are RUNNING are recorded and stopped, so the
+    # restart below never boots a container the operator had deliberately
+    # down (and a stack with no app containers — e.g. mid Postgres upgrade,
+    # after `docker compose down` — skips the stop/start entirely).
+    for pair in "nautobot:nautobot" "celery_worker:nautobot-celery-worker" \
+                "celery_beat:nautobot-celery-beat"; do
+        if docker inspect --format '{{.State.Running}}' "${pair#*:}" 2>/dev/null | grep -q true; then
+            RUNNING_APP="${RUNNING_APP}${pair%%:*} "
+        fi
+    done
+    if [[ -n "$RUNNING_APP" ]]; then
+        echo "  Stopping Nautobot app containers (restarted after the restore): ${RUNNING_APP}"
+        APP_STOPPED=true
+        # shellcheck disable=SC2086  # intentional word-splitting of service names
+        docker compose --project-directory "$SCRIPT_DIR" stop ${RUNNING_APP}
+    fi
+    docker exec nautobot-db psql -U nautobot -d postgres -Atc \
+        "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity
+         WHERE datname='nautobot' AND pid <> pg_backend_pid();" >/dev/null
+
     # Drop and recreate the database to avoid conflicts (duplicate primary
     # keys, existing tables, etc.) when restoring into a non-empty database.
     echo "  Dropping and recreating nautobot database..."
@@ -258,6 +302,22 @@ if [[ "$RESTORE_TYPE" == "media" || "$RESTORE_TYPE" == "all" ]]; then
             chown -R ${NAUTOBOT_UID}:${NAUTOBOT_GID} /data
         "
     echo "  Media files restored."
+fi
+
+# ---------------------------------------------------------------------------
+# Restart what we stopped
+# ---------------------------------------------------------------------------
+if [[ "$APP_STOPPED" == true ]]; then
+    echo "Restarting Nautobot app containers: ${RUNNING_APP}"
+    # `start`, NOT `up -d`: up may recreate containers or even the project
+    # network on unrelated config drift (e.g. a pending NAUTOBOT_NETWORK_SUBNET
+    # change) — mid-restore is no place for that.  A start failure must not
+    # report the completed restore as failed, so it downgrades to a warning.
+    # shellcheck disable=SC2086  # intentional word-splitting of service names
+    if ! docker compose --project-directory "$SCRIPT_DIR" start ${RUNNING_APP}; then
+        echo "WARNING: could not restart: ${RUNNING_APP}" >&2
+        echo "  Start manually:  docker compose --project-directory \"${SCRIPT_DIR}\" up -d" >&2
+    fi
 fi
 
 echo ""

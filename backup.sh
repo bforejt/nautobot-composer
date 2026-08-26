@@ -3,8 +3,8 @@
 # backup.sh — Back up Nautobot database and/or media files
 #
 # Creates timestamped backups in ./backups/ (or a custom directory).
-#   Database: pg_dump piped through gzip  -> nautobot_db_<timestamp>.sql.gz
-#   Media:    tar of the nautobot_media volume -> nautobot_media_<timestamp>.tar.gz
+#   Database: pg_dump piped through gzip  -> nautobot_db_v<version>_<timestamp>.sql.gz
+#   Media:    tar of the nautobot_media volume -> nautobot_media_v<version>_<timestamp>.tar.gz
 #
 # Deliberately NOT backed up: .env and ./secrets/ (plaintext credentials —
 # keep their source of truth in a password manager/vault; see secrets/README.md).
@@ -84,9 +84,18 @@ fi
 
 mkdir -p "$BACKUP_DIR"
 
-# Get the running Nautobot version for the backup filename.
+# Get the running Nautobot version for the backup filename.  `nautobot-server
+# version` prints several "Label: value" lines (version, Django, config path);
+# only the version number may reach the filename, and it must stay
+# filename-safe — a stray '/' or space here breaks the redirect below.
 if docker inspect --format '{{.State.Running}}' nautobot 2>/dev/null | grep -q true; then
-    NAUTOBOT_VER="$(docker exec nautobot nautobot-server version 2>/dev/null | tr -d '[:space:]')"
+    VER_OUT="$(docker exec nautobot nautobot-server version 2>/dev/null || true)"
+    NAUTOBOT_VER="$(printf '%s\n' "$VER_OUT" | sed -n 's/^Nautobot version:[[:space:]]*//p' | head -1)"
+    if [[ -z "$NAUTOBOT_VER" ]]; then
+        # Bare or reworded output: first version-looking token.
+        NAUTOBOT_VER="$(printf '%s\n' "$VER_OUT" | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 || true)"
+    fi
+    NAUTOBOT_VER="${NAUTOBOT_VER//[^A-Za-z0-9._-]/}"
 fi
 NAUTOBOT_VER="${NAUTOBOT_VER:-unknown}"
 
