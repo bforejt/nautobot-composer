@@ -55,6 +55,16 @@ Nautobot will be available at:
 
 The web UI is HTTPS-only: the plain-HTTP mapping was removed so host port 80 stays free for the [firmware server's](#firmware-server-optional) HTTP download endpoint, whose consumers can't always specify a port. The default certificate is self-signed (browser warning); drop in your own to remove it — see [Web TLS Certificate](#web-tls-certificate).
 
+### NFV convenience flags (nautobot-proxmox integration)
+
+Three `setup.sh` flags collapse the [nautobot-proxmox](https://github.com/bforejt/nautobot-proxmox)
+getting-started into commands: `--with-nfv-jobs` registers that repo as a
+jobs Git Repository, syncs it, enables its jobs, and runs its bootstrap
+(healthy stack required; idempotent; repo URL/branch via `NFV_JOBS_REPO_*`
+in `.env`); `--nfv-secrets` prompts (hidden input) through the standard
+secret values, storing each via `add-secret.sh`; `--enable-forge` activates
+the answer service's media forge (see the Answer Service section).
+
 ## Project Structure
 
 ```
