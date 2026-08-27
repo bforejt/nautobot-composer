@@ -55,6 +55,25 @@ Nautobot will be available at:
 
 The web UI is HTTPS-only: the plain-HTTP mapping was removed so host port 80 stays free for the [firmware server's](#firmware-server-optional) HTTP download endpoint, whose consumers can't always specify a port. The default certificate is self-signed (browser warning); drop in your own to remove it — see [Web TLS Certificate](#web-tls-certificate).
 
+### NFV convenience flags (nautobot-proxmox integration)
+
+The nautobot-proxmox jobs run on **Nautobot 2.4 and 3.x** (validated on
+2.4.30 and 3.2 — see that repo's Requirements); pick your train with `-v`.
+Three `setup.sh` flags collapse its getting-started into commands:
+`--with-nfv-jobs` registers the repo as a jobs Git Repository, syncs it,
+enables its jobs, and runs its bootstrap (runs after the start/wait phases;
+idempotent; repo URL/branch via `NFV_JOBS_REPO_*` in `.env`);
+`--nfv-secrets` prompts (hidden input) through the standard secret values,
+storing each via `add-secret.sh`; `--enable-forge` activates the answer
+service's media forge (pair with `--with-firmware` — it publishes into the
+firmware server's volume; see the Answer Service section). The canonical
+full-lab bring-up:
+
+```bash
+./setup.sh --with-firmware --enable-forge --build --start --wait --with-nfv-jobs
+./setup.sh --nfv-secrets     # then supply the credential values
+```
+
 ## Project Structure
 
 ```
@@ -139,7 +158,7 @@ All sensitive and deployment-specific values live in `.env`. See `env.example` f
 | Variable | Purpose |
 |----------|---------|
 | `NAUTOBOT_ENV` | Deployment tier — `lab` (default), `staging`, or `production`. Gates destructive operations (`reset.sh`, `load-test-data.sh`, `restore.sh`). See [Environment tier guard](#environment-tier-guard). |
-| `COMPOSE_PROFILES` | Comma-separated opt-in add-ons (`gitlab`, `firmware`) activated for every `docker compose` command in this directory — the persistent switch that makes add-ons start on `up -d`, after reboots, and via the systemd unit. Manage with `setup.sh --with-gitlab` / `--with-firmware` (or `--without-*`). |
+| `COMPOSE_PROFILES` | Comma-separated opt-in add-ons (`gitlab`, `firmware`, `answer-service`, `tacacs`) activated for every `docker compose` command in this directory — the persistent switch that makes add-ons start on `up -d`, after reboots, and via the systemd unit. Manage with `setup.sh --with-<profile>` / `--without-<profile>`. |
 | `NAUTOBOT_VERSION` | Image tag for `networktocode/nautobot` (e.g. `3.1-py3.12`). Read at build time as a docker compose build-arg; set or changed via `setup.sh -v <version>`. |
 | `NAUTOBOT_SECRET_KEY` | Django secret key (required, generate unique per deployment) |
 | `NAUTOBOT_ALLOWED_HOSTS` | Comma-separated hostnames/IPs allowed to reach Nautobot |
@@ -682,8 +701,8 @@ You need it only if you use the nautobot-proxmox bare-metal install track; the f
 **Start it** — persistent, same pattern as the firmware profile (comes back after reboot, covered by the systemd unit):
 
 ```bash
-# Add answer-service to COMPOSE_PROFILES in .env (comma-separated with any
-# other profiles, e.g. COMPOSE_PROFILES=firmware,answer-service), then:
+./setup.sh --with-answer-service   # enables the profile + generates TLS keypair,
+                                   # fingerprint, URLs, and the node root hash
 docker compose up -d --build
 ```
 
@@ -693,7 +712,9 @@ Ad-hoc instead: `docker compose --profile answer-service up -d --build`.
 installer media against its own URL/cert identity — download the stock PVE
 ISO, run `proxmox-auto-install-assistant`, publish per-version artifacts into
 the firmware volume, and register a Staged SoftwareVersion — triggered by the
-`Prepare Installer Media` Nautobot job. It ships **disabled**
+`Prepare Installer Media (Media Forge)` Nautobot job. Publishing requires
+the **firmware profile** (its volume is where artifacts land — pair
+`--enable-forge` with `--with-firmware`). It ships **disabled**
 (`ANSWER_ADMIN_ENABLED=false`; the `/admin/*` surface answers 404) and should
 be enabled only on the lab/build instance — one command does it all:
 `./setup.sh --enable-forge` (implies the answer-service profile, generates
