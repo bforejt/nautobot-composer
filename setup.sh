@@ -141,6 +141,7 @@ while [[ $# -gt 0 ]]; do
             cat <<'HELP'
 Usage: ./setup.sh [-v VERSION] [-p PYTHON] [--with-gitlab] [--with-firmware]
                   [--with-answer-service] [--with-tacacs] [--firmware-url URL]
+                  [--enable-forge] [--with-nfv-jobs] [--nfv-secrets]
                   [--build] [--start] [--wait] [--debug]
 
 Options:
@@ -155,8 +156,10 @@ Options:
       --without-firmware  Disable the firmware-server add-on
       --with-answer-service
                           Enable the NFV answer-service add-on (bare-metal
-                          Proxmox install engine; needs the sibling
-                          nautobot-proxmox checkout — see README)
+                          Proxmox install engine).  The image builds from the
+                          nautobot-proxmox repo over git at build time — set
+                          ANSWER_SERVICE_BUILD_CONTEXT in .env to use a local
+                          checkout instead (see README)
       --without-answer-service
                           Disable the answer-service add-on
       --enable-forge      Turn on the answer service's media forge (implies
@@ -166,14 +169,18 @@ Options:
                           the Nautobot job, and defaults the publish dir and
                           device-facing base URL.  Lab/build instances only —
                           the forge admin surface answers 404 everywhere else.
+                          Publishing needs the firmware profile (pair with
+                          --with-firmware).
       --disable-forge     Set ANSWER_ADMIN_ENABLED=false (token and secret
                           file are kept; remove them manually if desired).
       --with-nfv-jobs     Register the nautobot-proxmox repo as a jobs Git
                           Repository in Nautobot, sync it, enable its jobs,
                           and run 'Bootstrap NFV Data Model' — the whole
-                          getting-started §1.  Needs a HEALTHY stack (pair
-                          with --start --wait, or re-run once it is up);
-                          idempotent.  Repo URL/branch overridable via
+                          getting-started §1.  Runs after the start/wait
+                          phases, so pair with --build --start --wait on a
+                          fresh install, or run against an already-healthy
+                          stack; idempotent.  Nautobot 2.4.x stacks only
+                          (use -v 2.4).  Repo URL/branch overridable via
                           NFV_JOBS_REPO_URL / NFV_JOBS_REPO_BRANCH in .env.
       --nfv-secrets       Prompt (hidden input) through the standard NFV
                           secret VALUES — jumphost console password, XCC and
@@ -214,6 +221,11 @@ Examples:
 
   # Same, with the GitLab add-on enabled persistently (starts on boot too).
   ./setup.sh --with-gitlab --build --start --wait
+
+  # Full NFV lab in one shot: 2.4 stack + firmware server + media forge, then
+  # register/sync/enable the nautobot-proxmox jobs and run their bootstrap.
+  ./setup.sh -v 2.4 --with-firmware --enable-forge --build --start --wait --with-nfv-jobs
+  ./setup.sh --nfv-secrets     # then supply the credential values
 
   # Enable the firmware server on an existing install and start it.
   ./setup.sh --with-firmware --start
@@ -1523,6 +1535,10 @@ if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
     if [[ "$FORGE" == "on" ]]; then
         echo ""
         echo "  Media forge (--enable-forge):"
+        if [[ ",${NEW_PROFILES}," != *,firmware,* ]]; then
+            echo "    WARNING: the firmware profile is not enabled — the forge publishes"
+            echo "             into the firmware server's volume.  Pair with --with-firmware."
+        fi
         FORGE_TOKEN="$(env_value ANSWER_ADMIN_TOKEN)"
         if [[ -z "$FORGE_TOKEN" ]]; then
             FORGE_TOKEN="$(generate_alphanum 48)"
@@ -1582,7 +1598,7 @@ if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
             echo "    secrets/answer_service_admin_token written."
         fi
         echo "    Forge ON.  Apply: docker compose --profile answer-service up -d --build"
-        echo "      then re-run 'Bootstrap NFV Data Model' and use 'Prepare Installer Media'."
+        echo "      then re-run 'Bootstrap NFV Data Model' and run 'Prepare Installer Media (Media Forge)'."
     elif [[ "$FORGE" == "off" ]]; then
         if grep -qE '^ANSWER_ADMIN_ENABLED=' "$ENV_FILE"; then
             set_env_var ANSWER_ADMIN_ENABLED false
@@ -1656,108 +1672,6 @@ if [[ "$NFV_SECRETS" == "on" ]]; then
         fi
         sval=""
     done
-fi
-
-# ---------------------------------------------------------------------------
-# NFV jobs bring-up (--with-nfv-jobs): the API half of the nautobot-proxmox
-# getting-started §1 — register the Git Repository (matched by remote URL so
-# an existing record under any name is reused), sync, enable the repo's
-# jobs, run the bootstrap job.  Requires a HEALTHY stack; degrades to
-# printed instructions otherwise.  Idempotent throughout.
-# ---------------------------------------------------------------------------
-if [[ "$NFV_JOBS" == "on" ]]; then
-    echo ""
-    echo "  NFV jobs bring-up (--with-nfv-jobs):"
-    if ! docker compose exec -T nautobot curl -sf http://localhost:8080/health/ >/dev/null 2>&1; then
-        echo "    Stack not healthy — skipped.  Bring it up first, then re-run:"
-        echo "      ./setup.sh --with-nfv-jobs        (or pair with --start --wait)"
-    elif [[ -z "$(env_value NAUTOBOT_SUPERUSER_API_TOKEN)" ]]; then
-        echo "    Skipped: NAUTOBOT_SUPERUSER_API_TOKEN is empty in .env."
-    else
-        NFV_TOKEN="$(env_value NAUTOBOT_SUPERUSER_API_TOKEN)" \
-        NFV_REPO_URL="$(env_value NFV_JOBS_REPO_URL)" \
-        NFV_REPO_BRANCH="$(env_value NFV_JOBS_REPO_BRANCH)" \
-        python3 - <<'NFVPY' || echo "    ACTION NEEDED: bring-up incomplete — see messages above."
-import json, os, ssl, sys, time, urllib.request
-
-CTX = ssl._create_unverified_context()
-TOKEN = os.environ["NFV_TOKEN"]
-REPO_URL = os.environ.get("NFV_REPO_URL") or "https://github.com/bforejt/nautobot-proxmox.git"
-BRANCH = os.environ.get("NFV_REPO_BRANCH") or "main"
-BASE = "https://localhost/api"
-
-def nb(method, path, data=None):
-    req = urllib.request.Request(
-        BASE + path,
-        data=json.dumps(data).encode() if data is not None else None,
-        headers={"Authorization": f"Token {TOKEN}", "Content-Type": "application/json"},
-        method=method)
-    with urllib.request.urlopen(req, context=CTX, timeout=30) as r:
-        return json.loads(r.read()) if r.status != 204 else {}
-
-def status_of(result_id):
-    d = nb("GET", f"/extras/job-results/{result_id}/")
-    st = d["status"]
-    return st["value"] if isinstance(st, dict) else st
-
-def wait_result(result_id, what, timeout):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        st = status_of(result_id)
-        if st in ("SUCCESS", "FAILURE", "ERRORED"):
-            return st
-        time.sleep(5)
-    return "TIMEOUT"
-
-# 1. Git repository — match by remote URL (any record name), else create.
-repos = nb("GET", "/extras/git-repositories/?limit=100")["results"]
-repo = next((r for r in repos
-             if r["remote_url"].rstrip("/").removesuffix(".git")
-             == REPO_URL.rstrip("/").removesuffix(".git")), None)
-if repo:
-    print(f"    repo: reusing {repo['name']!r} ({repo['remote_url']}, branch {repo['branch']})")
-else:
-    repo = nb("POST", "/extras/git-repositories/", {
-        "name": "nautobot-proxmox", "remote_url": REPO_URL,
-        "branch": BRANCH, "provided_contents": ["extras.job"]})
-    print(f"    repo: created {repo['name']!r} (branch {BRANCH})")
-
-# 2. Sync.
-sync = nb("POST", f"/extras/git-repositories/{repo['id']}/sync/")
-st = wait_result(sync["job_result"]["id"], "sync", 180)
-print(f"    sync: {st}")
-if st != "SUCCESS":
-    sys.exit(1)
-
-# 3. Enable the repo's jobs (module names live under the repo slug).
-slug = repo.get("slug") or nb("GET", f"/extras/git-repositories/{repo['id']}/").get("slug", "")
-jobs = nb("GET", "/extras/jobs/?limit=300")["results"]
-mine = [j for j in jobs if j.get("module_name", "").startswith(f"{slug}.")
-        and j.get("installed", True)]  # skip stale records of removed jobs
-enabled = 0
-for j in mine:
-    if not j.get("enabled"):
-        nb("PATCH", f"/extras/jobs/{j['id']}/", {"enabled": True})
-        enabled += 1
-print(f"    jobs: {len(mine)} from this repo, {enabled} newly enabled")
-if not mine:
-    print("    WARNING: no jobs registered from the repo — check the sync log in Nautobot.")
-    sys.exit(1)
-
-# 4. Run the bootstrap job.
-boot = next((j for j in mine if j.get("name") == "Bootstrap NFV Data Model"), None)
-if boot is None:
-    print("    WARNING: 'Bootstrap NFV Data Model' not found among the repo's jobs.")
-    sys.exit(1)
-run = nb("POST", f"/extras/jobs/{boot['id']}/run/", {"data": {}})
-st = wait_result(run["job_result"]["id"], "bootstrap", 120)
-print(f"    bootstrap: {st}")
-if st != "SUCCESS":
-    sys.exit(1)
-print("    NFV jobs bring-up complete — supply secret VALUES (--nfv-secrets /")
-print("      add-secret.sh) and create your Devices per the repo's getting-started.")
-NFVPY
-    fi
 fi
 
 echo "  Done."
@@ -1905,6 +1819,113 @@ if [[ "$DO_WAIT" == true ]]; then
     done
 fi
 
+# ---------------------------------------------------------------------------
+# NFV jobs bring-up (--with-nfv-jobs): the API half of the nautobot-proxmox
+# getting-started §1 — register the Git Repository (matched by remote URL so
+# an existing record under any name is reused), sync, enable the repo's
+# jobs, run the bootstrap job.  Requires a HEALTHY stack; degrades to
+# printed instructions otherwise.  Idempotent throughout.
+# ---------------------------------------------------------------------------
+if [[ "$NFV_JOBS" == "on" ]]; then
+    echo ""
+    echo "  NFV jobs bring-up (--with-nfv-jobs):"
+    if ! docker compose exec -T nautobot curl -sf http://localhost:8080/health/ >/dev/null 2>&1; then
+        echo "    Stack not healthy — skipped.  Bring it up first, then re-run:"
+        echo "      ./setup.sh --with-nfv-jobs        (or pair with --start --wait)"
+    elif [[ -z "$(env_value NAUTOBOT_SUPERUSER_API_TOKEN)" ]]; then
+        echo "    Skipped: NAUTOBOT_SUPERUSER_API_TOKEN is empty in .env."
+    else
+        NFV_NB_VER="$(env_value NAUTOBOT_VERSION)"
+        if [[ -n "$NFV_NB_VER" && "$NFV_NB_VER" != 2.4* ]]; then
+            echo "    WARNING: this stack is Nautobot ${NFV_NB_VER} — the nautobot-proxmox"
+            echo "             jobs target 2.4.x only (that repo's Requirements).  Proceeding,"
+            echo "             but expect failures; rebuild with ./setup.sh -v 2.4 first."
+        fi
+        NFV_TOKEN="$(env_value NAUTOBOT_SUPERUSER_API_TOKEN)" \
+        NFV_REPO_URL="$(env_value NFV_JOBS_REPO_URL)" \
+        NFV_REPO_BRANCH="$(env_value NFV_JOBS_REPO_BRANCH)" \
+        python3 - <<'NFVPY' || echo "    ACTION NEEDED: bring-up incomplete — see messages above."
+import json, os, ssl, sys, time, urllib.request
+
+CTX = ssl._create_unverified_context()
+TOKEN = os.environ["NFV_TOKEN"]
+REPO_URL = os.environ.get("NFV_REPO_URL") or "https://github.com/bforejt/nautobot-proxmox.git"
+BRANCH = os.environ.get("NFV_REPO_BRANCH") or "main"
+BASE = "https://localhost/api"
+
+def nb(method, path, data=None):
+    req = urllib.request.Request(
+        BASE + path,
+        data=json.dumps(data).encode() if data is not None else None,
+        headers={"Authorization": f"Token {TOKEN}", "Content-Type": "application/json"},
+        method=method)
+    with urllib.request.urlopen(req, context=CTX, timeout=30) as r:
+        return json.loads(r.read()) if r.status != 204 else {}
+
+def status_of(result_id):
+    d = nb("GET", f"/extras/job-results/{result_id}/")
+    st = d["status"]
+    return st["value"] if isinstance(st, dict) else st
+
+def wait_result(result_id, what, timeout):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        st = status_of(result_id)
+        if st in ("SUCCESS", "FAILURE", "ERRORED"):
+            return st
+        time.sleep(5)
+    return "TIMEOUT"
+
+# 1. Git repository — match by remote URL (any record name), else create.
+repos = nb("GET", "/extras/git-repositories/?limit=100")["results"]
+repo = next((r for r in repos
+             if r["remote_url"].rstrip("/").removesuffix(".git")
+             == REPO_URL.rstrip("/").removesuffix(".git")), None)
+if repo:
+    print(f"    repo: reusing {repo['name']!r} ({repo['remote_url']}, branch {repo['branch']})")
+else:
+    repo = nb("POST", "/extras/git-repositories/", {
+        "name": "nautobot-proxmox", "remote_url": REPO_URL,
+        "branch": BRANCH, "provided_contents": ["extras.job"]})
+    print(f"    repo: created {repo['name']!r} (branch {BRANCH})")
+
+# 2. Sync.
+sync = nb("POST", f"/extras/git-repositories/{repo['id']}/sync/")
+st = wait_result(sync["job_result"]["id"], "sync", 180)
+print(f"    sync: {st}")
+if st != "SUCCESS":
+    sys.exit(1)
+
+# 3. Enable the repo's jobs (module names live under the repo slug).
+slug = repo.get("slug") or nb("GET", f"/extras/git-repositories/{repo['id']}/").get("slug", "")
+jobs = nb("GET", "/extras/jobs/?limit=300")["results"]
+mine = [j for j in jobs if j.get("module_name", "").startswith(f"{slug}.")
+        and j.get("installed", True)]  # skip stale records of removed jobs
+enabled = 0
+for j in mine:
+    if not j.get("enabled"):
+        nb("PATCH", f"/extras/jobs/{j['id']}/", {"enabled": True})
+        enabled += 1
+print(f"    jobs: {len(mine)} from this repo, {enabled} newly enabled")
+if not mine:
+    print("    WARNING: no jobs registered from the repo — check the sync log in Nautobot.")
+    sys.exit(1)
+
+# 4. Run the bootstrap job.
+boot = next((j for j in mine if j.get("name") == "Bootstrap NFV Data Model"), None)
+if boot is None:
+    print("    WARNING: 'Bootstrap NFV Data Model' not found among the repo's jobs.")
+    sys.exit(1)
+run = nb("POST", f"/extras/jobs/{boot['id']}/run/", {"data": {}})
+st = wait_result(run["job_result"]["id"], "bootstrap", 120)
+print(f"    bootstrap: {st}")
+if st != "SUCCESS":
+    sys.exit(1)
+print("    NFV jobs bring-up complete — supply secret VALUES (--nfv-secrets /")
+print("      add-secret.sh) and create your Devices per the repo's getting-started.")
+NFVPY
+    fi
+fi
 # ---------------------------------------------------------------------------
 # Final next-steps message
 # ---------------------------------------------------------------------------
