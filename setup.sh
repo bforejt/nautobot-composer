@@ -36,6 +36,7 @@ DO_WAIT=false
 PROFILE_GITLAB=""
 PROFILE_FIRMWARE=""
 PROFILE_ANSWER_SERVICE=""
+FORGE=""
 PROFILE_TACACS=""
 # Explicit device-facing firmware base URL (--firmware-url).  Empty = derive
 # from the host's primary IP where needed (see FIRMWARE_BASE_URL handling).
@@ -99,6 +100,15 @@ while [[ $# -gt 0 ]]; do
             PROFILE_TACACS="$new"
             shift
             ;;
+        --enable-forge|--disable-forge)
+            new=$([[ "$1" == --disable-* ]] && echo off || echo on)
+            if [[ -n "$FORGE" && "$FORGE" != "$new" ]]; then
+                echo "ERROR: --enable-forge and --disable-forge are contradictory." >&2
+                exit 1
+            fi
+            FORGE="$new"
+            shift
+            ;;
         --firmware-url)
             FIRMWARE_URL="${2:-}"
             if [[ ! "$FIRMWARE_URL" =~ ^https?:// ]]; then
@@ -139,6 +149,15 @@ Options:
                           nautobot-proxmox checkout — see README)
       --without-answer-service
                           Disable the answer-service add-on
+      --enable-forge      Turn on the answer service's media forge (implies
+                          --with-answer-service): generates ANSWER_ADMIN_TOKEN
+                          once (never rotated automatically), writes the
+                          matching secrets/answer_service_admin_token file for
+                          the Nautobot job, and defaults the publish dir and
+                          device-facing base URL.  Lab/build instances only —
+                          the forge admin surface answers 404 everywhere else.
+      --disable-forge     Set ANSWER_ADMIN_ENABLED=false (token and secret
+                          file are kept; remove them manually if desired).
       --with-tacacs       Enable the TACACS+ device-AAA add-on (tac_plus-ng +
                           Active Directory users + Nautobot-rendered device
                           inventory — see README)
@@ -1119,6 +1138,19 @@ apply_profile_switch() {
 }
 apply_profile_switch gitlab         "$PROFILE_GITLAB"
 apply_profile_switch firmware       "$PROFILE_FIRMWARE"
+# --enable-forge implies the answer-service profile (a forge without the
+# service is meaningless); an explicit --without-answer-service conflicts.
+if [[ "$FORGE" == "on" ]]; then
+    if [[ "$PROFILE_ANSWER_SERVICE" == "off" ]]; then
+        echo "ERROR: --enable-forge conflicts with --without-answer-service." >&2
+        exit 1
+    fi
+    if [[ -z "$PROFILE_ANSWER_SERVICE" ]] \
+       && [[ ",$(env_value COMPOSE_PROFILES)," != *,answer-service,* ]]; then
+        PROFILE_ANSWER_SERVICE="on"
+        echo "  --enable-forge: enabling the answer-service profile too."
+    fi
+fi
 apply_profile_switch answer-service "$PROFILE_ANSWER_SERVICE"
 apply_profile_switch tacacs         "$PROFILE_TACACS"
 
@@ -1458,6 +1490,87 @@ if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
             echo "    ACTION NEEDED: set ANSWER_NAUTOBOT_TOKEN in .env (a Nautobot API token"
             echo "                   — not auto-filled on the '${ASVC_TIER:-lab}' tier)."
         fi
+    fi
+
+    # (6) Media forge (--enable-forge / --disable-forge).  Opt-in per run:
+    # forge OFF is the correct posture everywhere except the lab/build
+    # instance that prepares installer media.  Idempotent, and an existing
+    # admin token is NEVER rotated here (a running container and the
+    # Nautobot-side secret file hold copies) — delete the .env value and the
+    # secrets file to force a new one.
+    if [[ "$FORGE" == "on" ]]; then
+        echo ""
+        echo "  Media forge (--enable-forge):"
+        FORGE_TOKEN="$(env_value ANSWER_ADMIN_TOKEN)"
+        if [[ -z "$FORGE_TOKEN" ]]; then
+            FORGE_TOKEN="$(generate_alphanum 48)"
+            echo "    Generated a new ANSWER_ADMIN_TOKEN."
+        else
+            echo "    ANSWER_ADMIN_TOKEN present — reusing (never rotated automatically)."
+        fi
+        if grep -qE '^ANSWER_ADMIN_ENABLED=' "$ENV_FILE"; then
+            set_env_var ANSWER_ADMIN_ENABLED true
+        else
+            printf '\nANSWER_ADMIN_ENABLED=true\n' >> "$ENV_FILE"
+        fi
+        if grep -qE '^ANSWER_ADMIN_TOKEN=' "$ENV_FILE"; then
+            set_env_var ANSWER_ADMIN_TOKEN "$FORGE_TOKEN"
+        else
+            printf 'ANSWER_ADMIN_TOKEN=%s\n' "$FORGE_TOKEN" >> "$ENV_FILE"
+        fi
+        # Publish dir: the writable firmware-volume mount inside the container.
+        if [[ -z "$(env_value ANSWER_FIRMWARE_PUBLISH_DIR)" ]]; then
+            if grep -qE '^ANSWER_FIRMWARE_PUBLISH_DIR=' "$ENV_FILE"; then
+                set_env_var ANSWER_FIRMWARE_PUBLISH_DIR /firmware-publish
+            else
+                printf 'ANSWER_FIRMWARE_PUBLISH_DIR=/firmware-publish\n' >> "$ENV_FILE"
+            fi
+            echo "    ANSWER_FIRMWARE_PUBLISH_DIR=/firmware-publish (firmware volume mount)."
+        fi
+        # Device-facing base for registered download_urls — reuse the firmware
+        # server's derived plain-HTTP base (XCC1 needs plain HTTP) when unset.
+        if [[ -z "$(env_value ANSWER_FIRMWARE_BASE_URL)" ]]; then
+            FORGE_BASE="$(env_value FIRMWARE_BASE_URL)"
+            if [[ -n "$FORGE_BASE" ]]; then
+                if grep -qE '^ANSWER_FIRMWARE_BASE_URL=' "$ENV_FILE"; then
+                    set_env_var ANSWER_FIRMWARE_BASE_URL "$FORGE_BASE"
+                else
+                    printf 'ANSWER_FIRMWARE_BASE_URL=%s\n' "$FORGE_BASE" >> "$ENV_FILE"
+                fi
+                echo "    ANSWER_FIRMWARE_BASE_URL defaulted from FIRMWARE_BASE_URL: ${FORGE_BASE}"
+            else
+                echo "    ACTION NEEDED: set ANSWER_FIRMWARE_BASE_URL in .env (device-facing"
+                echo "                   plain-HTTP base, e.g. http://<host-ip>/images) — the"
+                echo "                   firmware profile's FIRMWARE_BASE_URL is empty."
+            fi
+        fi
+        # The SAME bearer as a text-file secret: the PrepareInstallerMedia job
+        # authenticates through the bootstrap-created Secret record that reads
+        # this file.  No trailing newline (the provider serves bytes as-is).
+        FORGE_SECRET_FILE="${SECRETS_HOST_DIR}/answer_service_admin_token"
+        if [[ -s "$FORGE_SECRET_FILE" && "$(cat "$FORGE_SECRET_FILE")" == "$FORGE_TOKEN" ]]; then
+            echo "    secrets/answer_service_admin_token in sync."
+        else
+            printf '%s' "$FORGE_TOKEN" > "$FORGE_SECRET_FILE"
+            docker run --rm -v "${SECRETS_HOST_DIR}:/secrets" alpine sh -c "
+                chown ${EUID:-$(id -u)}:${NAUTOBOT_GID} /secrets/answer_service_admin_token
+                chmod 640 /secrets/answer_service_admin_token
+                true
+            "
+            echo "    secrets/answer_service_admin_token written."
+        fi
+        echo "    Forge ON.  Apply: docker compose --profile answer-service up -d --build"
+        echo "      then re-run 'Bootstrap NFV Data Model' and use 'Prepare Installer Media'."
+    elif [[ "$FORGE" == "off" ]]; then
+        if grep -qE '^ANSWER_ADMIN_ENABLED=' "$ENV_FILE"; then
+            set_env_var ANSWER_ADMIN_ENABLED false
+        else
+            printf '\nANSWER_ADMIN_ENABLED=false\n' >> "$ENV_FILE"
+        fi
+        echo ""
+        echo "  Media forge disabled (ANSWER_ADMIN_ENABLED=false; the admin token and"
+        echo "    secrets file are kept — remove them manually if you want them gone)."
+        echo "    Apply with: docker compose up -d"
     fi
 fi
 

@@ -695,10 +695,14 @@ ISO, run `proxmox-auto-install-assistant`, publish per-version artifacts into
 the firmware volume, and register a Staged SoftwareVersion — triggered by the
 `Prepare Installer Media` Nautobot job. It ships **disabled**
 (`ANSWER_ADMIN_ENABLED=false`; the `/admin/*` surface answers 404) and should
-be enabled only on the lab/build instance: set `ANSWER_ADMIN_ENABLED=true`,
-`ANSWER_ADMIN_TOKEN`, `ANSWER_FIRMWARE_PUBLISH_DIR=/firmware-publish`, and
-`ANSWER_FIRMWARE_BASE_URL` in `.env` (see `env.example`), then
-`docker compose --profile answer-service up -d --build`. Full variable
+be enabled only on the lab/build instance — one command does it all:
+`./setup.sh --enable-forge` (implies the answer-service profile, generates
+`ANSWER_ADMIN_TOKEN` once, mirrors it into
+`secrets/answer_service_admin_token` for the Nautobot job, and defaults
+`ANSWER_FIRMWARE_PUBLISH_DIR` + `ANSWER_FIRMWARE_BASE_URL`), then
+`docker compose --profile answer-service up -d --build`. `--disable-forge`
+flips it back off (token and secret kept). The variables can also be set by
+hand (see `env.example`). Full variable
 reference: the nautobot-proxmox repo's `bmc/answer_service/README.md`;
 workflow: its `docs/baremetal-install.md` "media forge" section.
 
