@@ -57,9 +57,9 @@ The web UI is HTTPS-only: the plain-HTTP mapping was removed so host port 80 sta
 
 ### NFV convenience flags (nautobot-proxmox integration)
 
-**The nautobot-proxmox jobs target Nautobot 2.4.x** — initialize the stack
-with `./setup.sh -v 2.4` (see that repo's Requirements) before using these.
-Three `setup.sh` flags then collapse its getting-started into commands:
+The nautobot-proxmox jobs run on **Nautobot 2.4 and 3.x** (validated on
+2.4.30 and 3.2 — see that repo's Requirements); pick your train with `-v`.
+Three `setup.sh` flags collapse its getting-started into commands:
 `--with-nfv-jobs` registers the repo as a jobs Git Repository, syncs it,
 enables its jobs, and runs its bootstrap (runs after the start/wait phases;
 idempotent; repo URL/branch via `NFV_JOBS_REPO_*` in `.env`);
@@ -70,7 +70,7 @@ firmware server's volume; see the Answer Service section). The canonical
 full-lab bring-up:
 
 ```bash
-./setup.sh -v 2.4 --with-firmware --enable-forge --build --start --wait --with-nfv-jobs
+./setup.sh --with-firmware --enable-forge --build --start --wait --with-nfv-jobs
 ./setup.sh --nfv-secrets     # then supply the credential values
 ```
 

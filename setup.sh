@@ -179,8 +179,8 @@ Options:
                           getting-started §1.  Runs after the start/wait
                           phases, so pair with --build --start --wait on a
                           fresh install, or run against an already-healthy
-                          stack; idempotent.  Nautobot 2.4.x stacks only
-                          (use -v 2.4).  Repo URL/branch overridable via
+                          stack; idempotent.  Works on Nautobot 2.4 and
+                          3.x stacks.  Repo URL/branch overridable via
                           NFV_JOBS_REPO_URL / NFV_JOBS_REPO_BRANCH in .env.
       --nfv-secrets       Prompt (hidden input) through the standard NFV
                           secret VALUES — jumphost console password, XCC and
@@ -222,9 +222,10 @@ Examples:
   # Same, with the GitLab add-on enabled persistently (starts on boot too).
   ./setup.sh --with-gitlab --build --start --wait
 
-  # Full NFV lab in one shot: 2.4 stack + firmware server + media forge, then
-  # register/sync/enable the nautobot-proxmox jobs and run their bootstrap.
-  ./setup.sh -v 2.4 --with-firmware --enable-forge --build --start --wait --with-nfv-jobs
+  # Full NFV lab in one shot: firmware server + media forge, then register/
+  # sync/enable the nautobot-proxmox jobs and run their bootstrap (works on
+  # 2.4 and 3.x stacks — pick the train with -v).
+  ./setup.sh --with-firmware --enable-forge --build --start --wait --with-nfv-jobs
   ./setup.sh --nfv-secrets     # then supply the credential values
 
   # Enable the firmware server on an existing install and start it.
@@ -1836,10 +1837,10 @@ if [[ "$NFV_JOBS" == "on" ]]; then
         echo "    Skipped: NAUTOBOT_SUPERUSER_API_TOKEN is empty in .env."
     else
         NFV_NB_VER="$(env_value NAUTOBOT_VERSION)"
-        if [[ -n "$NFV_NB_VER" && "$NFV_NB_VER" != 2.4* ]]; then
+        if [[ -n "$NFV_NB_VER" && "$NFV_NB_VER" != 2.4* && "$NFV_NB_VER" != 3* ]]; then
             echo "    WARNING: this stack is Nautobot ${NFV_NB_VER} — the nautobot-proxmox"
-            echo "             jobs target 2.4.x only (that repo's Requirements).  Proceeding,"
-            echo "             but expect failures; rebuild with ./setup.sh -v 2.4 first."
+            echo "             jobs are validated on 2.4 and 3.x (that repo's Requirements)."
+            echo "             Proceeding, but expect failures on other versions."
         fi
         NFV_TOKEN="$(env_value NAUTOBOT_SUPERUSER_API_TOKEN)" \
         NFV_REPO_URL="$(env_value NFV_JOBS_REPO_URL)" \
