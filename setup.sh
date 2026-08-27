@@ -1654,7 +1654,9 @@ if [[ "$NFV_SECRETS" == "on" ]]; then
     echo "  NFV secret values (--nfv-secrets)  [empty = skip; existing files skipped]:"
     for sname in jumphost_console_password xcc_username xcc_password \
                  host_ssh_username host_ssh_password \
-                 proxmox_token_id proxmox_token_secret; do
+                 proxmox_token_id proxmox_token_secret \
+                 pa_admin_password pa_authcode \
+                 scm_registration_pin_id scm_registration_pin_value; do
         if [[ -s "${SECRETS_HOST_DIR}/${sname}" ]]; then
             echo "    ${sname}: present — skipped."
             continue

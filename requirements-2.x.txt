@@ -63,3 +63,10 @@ nautobot-data-validation-engine>=3.3.1,<4.0.0
 # dependency in upstream Nautobot.  Bundled here so ./load-test-data.sh
 # works out of the box.  Remove if you don't load synthetic test data.
 factory-boy>=3.3.0,<4.0.0
+
+# ISO mastering for the nautobot-proxmox PA-VM day-0 builder (pa-bootstrap):
+# the deploy job renders the VM-Series bootstrap package and masters it into
+# a CD image with pycdlib (pure Python).  Git-synced jobs cannot install
+# packages, so the dependency lives in the image (recorded exception to the
+# jobs repo's requests-only rule).
+pycdlib>=1.14.0,<2.0.0
