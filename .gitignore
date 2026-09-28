@@ -48,3 +48,14 @@ backups/
 *.sql
 *.sql.gz
 *.tar.gz
+
+# Photos and screen recordings shared for troubleshooting — never in git
+*.mov
+*.MOV
+*.mp4
+*.MP4
+*.m4v
+*.mkv
+*.avi
+*.heic
+*.HEIC
