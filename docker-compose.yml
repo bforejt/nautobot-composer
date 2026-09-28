@@ -99,6 +99,13 @@ services:
     <<: [*nautobot-build, *nautobot-env, *nautobot-depends, *nautobot-volumes, *default-logging]
     container_name: nautobot-celery-worker
     command: nautobot-server celery worker --loglevel INFO --events
+    environment:
+      # Nautobot >= 2.4.24 / 3.0.1 (off by default): the worker touches
+      # /tmp/nautobot_celery_worker_heartbeat every 1 s and creates
+      # /tmp/nautobot_celery_worker_ready once it can accept tasks.  Every
+      # `setup.sh -v` train (2.4, 3.0, 3.1, 3.2) resolves above that floor.
+      # Paths are overridable via NAUTOBOT_CELERY_WORKER_{HEARTBEAT,READINESS}_FILE.
+      NAUTOBOT_CELERY_HEALTH_PROBES_AS_FILES: "true"
     depends_on:
       db:
         condition: service_healthy
@@ -107,10 +114,18 @@ services:
       nautobot:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "bash", "-c", "nautobot-server celery inspect ping --destination celery@$$HOSTNAME"]
+      # Ready file present AND heartbeat touched < 30 s ago.  No Django boot per
+      # check: the previous `celery inspect ping` took ~14 s against a 10 s
+      # timeout and could never pass.  Fails closed with a reason (visible in
+      # `docker inspect .State.Health.Log`) on pins below the version floor.
+      # `$$` is Compose escaping for a literal shell `$`.
+      test: ["CMD", "bash", "-c", "test -f /tmp/nautobot_celery_worker_ready && test -f /tmp/nautobot_celery_worker_heartbeat && [ $$(( $$(date +%s) - $$(stat -c %Y /tmp/nautobot_celery_worker_heartbeat) )) -lt 30 ] || { echo 'worker probe files absent or heartbeat stale: needs Nautobot >= 2.4.24 / 3.0.1 with NAUTOBOT_CELERY_HEALTH_PROBES_AS_FILES=true'; exit 1; }"]
       interval: 30s
-      timeout: 10s
-      retries: 5
+      timeout: 5s
+      retries: 3
+      # Worker was ready ~90 s after container start on a 4-CPU host; a passing
+      # check during start_period flips to healthy immediately, so a generous
+      # budget costs nothing on fast hosts and protects slow ones.
       start_period: 300s
     restart: unless-stopped
 
@@ -129,11 +144,15 @@ services:
       nautobot:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "bash", "-c", "test -f /tmp/celerybeat.pid && kill -0 $(cat /tmp/celerybeat.pid)"]
+      # Beat touches this file on every scheduler tick (<= 5 s apart) on
+      # Nautobot >= 2.2.0 with no opt-in; 60 s stale = many missed ticks.  The
+      # previous check looked for /tmp/celerybeat.pid, which nothing writes
+      # (the beat command has no --pidfile), so it could never pass.
+      test: ["CMD", "bash", "-c", "test -f /tmp/nautobot_celery_beat_heartbeat && [ $$(( $$(date +%s) - $$(stat -c %Y /tmp/nautobot_celery_beat_heartbeat) )) -lt 60 ] || { echo 'beat heartbeat absent or stale (> 60 s)'; exit 1; }"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
-      start_period: 60s
+      start_period: 300s
     restart: unless-stopped
 
   # --------------------------------------------------------------------------
