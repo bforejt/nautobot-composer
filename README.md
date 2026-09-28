@@ -856,6 +856,21 @@ Common causes:
 - **App migration error** (a particular App's schema change failed against your existing DB). Roll the App back in `requirements-{major}.x.txt`, rebuild, restart. If you can't recover, `./reset.sh` is the nuclear option.
 - **DB connection failure** mid-migration (the db container went unhealthy). Check `docker compose logs db` for OOM or disk-full conditions.
 
+### `celery_worker` or `celery_beat` reports unhealthy
+
+Both healthchecks read files the Nautobot processes touch themselves, so no Django boot happens per check:
+
+- **Worker** — `/tmp/nautobot_celery_worker_ready` must exist and `/tmp/nautobot_celery_worker_heartbeat` must have been touched within 30 s (the worker touches it every second). These files exist only when `NAUTOBOT_CELERY_HEALTH_PROBES_AS_FILES=true`, which `docker-compose.yml` sets on the worker, and only on **Nautobot ≥ 2.4.24 / ≥ 3.0.1**. Every `setup.sh -v` train (2.4, 3.0, 3.1, 3.2) resolves to a release above that floor; a hand-pinned patch tag below it fails the check permanently.
+- **Beat** — `/tmp/nautobot_celery_beat_heartbeat` must have been touched within 60 s (beat touches it every scheduler tick, ≤ 5 s apart; Nautobot ≥ 2.2.0, no opt-in).
+
+The check prints why it failed. Read the last few results:
+
+```bash
+docker inspect --format '{{range .State.Health.Log}}{{.Start}} exit={{.ExitCode}} {{.Output}}{{"\n"}}{{end}}' nautobot-celery-worker | tail -3
+```
+
+If the files are missing on a supported version, the process is genuinely stuck or never reached ready — `docker compose logs --tail 100 celery_worker` (or `celery_beat`) shows why. If the heartbeat is stale but the process is alive, the worker has lost its broker connection (Nautobot 3.2+ stops the heartbeat when Redis is unreachable); check `docker compose logs redis`.
+
 ### `./load-test-data.sh` fails with unique-constraint errors
 
 The script is **fresh-install only** by design — the seed produces deterministic IDs, so a second run on the same DB collides on the first table. Recovery from a partial run requires a clean DB:
