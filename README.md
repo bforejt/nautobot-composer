@@ -708,6 +708,23 @@ docker compose up -d --build
 
 Ad-hoc instead: `docker compose --profile answer-service up -d --build`.
 
+**Tuning knobs.** The container deliberately has no `env_file` (the stack
+`.env` holds DB credentials it must not see), so every service setting is an
+explicit `ANSWER_*` passthrough in `docker-compose.yml`; unset ones keep the
+service default. Beyond the required three and `ANSWER_DOMAIN` /
+`ANSWER_TIMEZONE`, `env.example` documents `ANSWER_COUNTRY`,
+`ANSWER_KEYBOARD`, `ANSWER_MAILTO`, `ANSWER_DNS_SERVER`, `ANSWER_AUTH_TOKEN`
+(optional bearer on `/answer` — prepare media with the same value),
+`ANSWER_NFV_ROLE` (→ `NFV_ROLE`), `ANSWER_ROOT_SSH_KEYS_FILE` (a container
+path under `/secrets`, e.g. `/secrets/root_ssh_keys` for
+`./secrets/root_ssh_keys`), `ANSWER_VERIFY_PHONE_HOME_SOURCE`,
+`ANSWER_KEY_TTL_SECONDS`, `ANSWER_CREDENTIALS_KEY_TTL_SECONDS`,
+`ANSWER_MAX_WEBHOOK_BYTES` and `ANSWER_PVE_ISO_BASE_URL`. **On Docker
+Desktop** published-port NAT always rewrites the node's source IP, so
+static-IP phone-homes fail `403 source does not match` until you set
+`ANSWER_VERIFY_PHONE_HOME_SOURCE=false` and recreate the container
+(`docker compose --profile answer-service up -d`).
+
 **Media forge (optional, off by default).** The service can also *prepare*
 installer media against its own URL/cert identity — download the stock PVE
 ISO, run `proxmox-auto-install-assistant`, publish per-version artifacts into
