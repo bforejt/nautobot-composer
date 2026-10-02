@@ -435,12 +435,42 @@ services:
       NAUTOBOT_SECRETS_PATH: /opt/nautobot/secrets/nodes
       DOMAIN: "${ANSWER_DOMAIN:-nfv.lab}"
       TIMEZONE: "${ANSWER_TIMEZONE:-America/Chicago}"
+      # Optional knobs from the service's canonical env reference
+      # (nautobot-proxmox bmc/answer_service/README.md).  Each falls back to
+      # the service's own default, so leaving them unset changes nothing.
+      # .env name -> service name differs where the service name lacks the
+      # ANSWER_ prefix (e.g. ANSWER_NFV_ROLE -> NFV_ROLE).
+      COUNTRY: "${ANSWER_COUNTRY:-us}"
+      KEYBOARD: "${ANSWER_KEYBOARD:-en-us}"
+      MAILTO: "${ANSWER_MAILTO:-root@localhost}"
+      # Empty = the node's default gateway (from-answer installs).
+      DNS_SERVER: "${ANSWER_DNS_SERVER:-}"
+      # Optional shared bearer on /answer; empty = off.  Installer media must
+      # be prepared with the same value (--answer-auth-token).
+      ANSWER_AUTH_TOKEN: "${ANSWER_AUTH_TOKEN:-}"
+      # Device role required by the serial allowlist.
+      NFV_ROLE: "${ANSWER_NFV_ROLE:-NFV}"
+      # Optional root authorized_keys file, one key per line.  Must be a path
+      # INSIDE the container — ./secrets is mounted at /secrets, e.g.
+      # /secrets/root_ssh_keys.  Empty = no keys.
+      ROOT_SSH_KEYS_FILE: "${ANSWER_ROOT_SSH_KEYS_FILE:-}"
+      # Credentials phone-home must come from the device's primary IP.  Set
+      # false where published-port NAT rewrites the source IP (always on
+      # Docker Desktop) — otherwise static-IP phone-homes 403.
+      VERIFY_PHONE_HOME_SOURCE: "${ANSWER_VERIFY_PHONE_HOME_SOURCE:-true}"
+      # One-time firstboot/webhook key lifetime (4 h) / phone-home key
+      # lifetime (14 d) / webhook payload cap (256 KiB).
+      KEY_TTL_SECONDS: "${ANSWER_KEY_TTL_SECONDS:-14400}"
+      CREDENTIALS_KEY_TTL_SECONDS: "${ANSWER_CREDENTIALS_KEY_TTL_SECONDS:-1209600}"
+      MAX_WEBHOOK_BYTES: "${ANSWER_MAX_WEBHOOK_BYTES:-262144}"
       # Media forge (OFF by default — enable only on the lab/build instance
       # that prepares installer media; nautobot-proxmox decision #44):
       ADMIN_ENABLED: "${ANSWER_ADMIN_ENABLED:-false}"
       ADMIN_TOKEN: "${ANSWER_ADMIN_TOKEN:-}"
       FIRMWARE_PUBLISH_DIR: "${ANSWER_FIRMWARE_PUBLISH_DIR:-}"
       FIRMWARE_BASE_URL: "${ANSWER_FIRMWARE_BASE_URL:-}"
+      # Stock-ISO mirror the forge downloads from (SHA256SUMS-verified).
+      PVE_ISO_BASE_URL: "${ANSWER_PVE_ISO_BASE_URL:-https://enterprise.proxmox.com/iso}"
     volumes:
       # One-time-key store + install-report archive.  Losing it mid-install
       # strands a node between answer and phone-home — keep it durable.
