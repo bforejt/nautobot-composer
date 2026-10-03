@@ -184,9 +184,10 @@ Options:
                           NFV_JOBS_REPO_URL / NFV_JOBS_REPO_BRANCH in .env.
       --nfv-secrets       Prompt (hidden input) through the standard NFV
                           secret VALUES — jumphost console password, XCC and
-                          host-SSH logins, Proxmox token pair — storing each
-                          via add-secret.sh.  Existing files are skipped;
-                          empty input skips one.
+                          host-SSH logins, Proxmox token pair, PA-VM values,
+                          the Host Baseline's AD bind password and SNMP
+                          community — storing each via add-secret.sh.
+                          Existing files are skipped; empty input skips one.
       --with-tacacs       Enable the TACACS+ device-AAA add-on (tac_plus-ng +
                           Active Directory users + Nautobot-rendered device
                           inventory — see README)
@@ -1296,6 +1297,13 @@ mkdir -p "${SECRETS_HOST_DIR}"
 # — create it now so Compose doesn't materialise a root-owned empty dir on
 # first `up`.
 mkdir -p "${SECRETS_HOST_DIR}/tacacs"
+# ./secrets/nodes holds per-node Proxmox API tokens: the answer service
+# writes the firstboot deploy token there, and the Celery worker (its own
+# read-write bind mount of this directory) the service-account tokens the
+# nautobot-proxmox Host Baseline job creates.  Create it now, for the same
+# reason as tacacs/ — a Compose-created root-owned dir would leave the worker
+# (uid 999) unable to write — and make it group-writable below.
+mkdir -p "${SECRETS_HOST_DIR}/nodes"
 
 # TACACS+ break-glass local admin — only when the tacacs add-on is enabled.
 # A single LOCAL priv-15 account whose password is a SHA-512 crypt hash in
@@ -1338,6 +1346,7 @@ docker run --rm \
         chmod 750 /secrets
         find /secrets -type d -exec chmod 750 {} +
         find /secrets -type f -exec chmod 640 {} +
+        chmod 770 /secrets/nodes
     "
 
 # Web TLS certificate: the nautobot service bind-mounts ./certs/nautobot.crt
@@ -1656,7 +1665,8 @@ if [[ "$NFV_SECRETS" == "on" ]]; then
                  host_ssh_username host_ssh_password \
                  proxmox_token_id proxmox_token_secret \
                  pa_admin_password pa_authcode \
-                 scm_registration_pin_id scm_registration_pin_value; do
+                 scm_registration_pin_id scm_registration_pin_value \
+                 ad_bind_password snmp_community; do
         if [[ -s "${SECRETS_HOST_DIR}/${sname}" ]]; then
             echo "    ${sname}: present — skipped."
             continue

@@ -48,8 +48,10 @@ x-nautobot-volumes: &nautobot-volumes
     # provider: a Secret record pointing at /opt/nautobot/secrets/<name> is
     # read at ACCESS time (job run / UI check), so dropping a new file on
     # the host — './add-secret.sh <name>' — adds or rotates a secret with no
-    # container restart.  Read-only: nothing in the stack writes secrets.
-    # See ./secrets/README.md and the README's "Secrets Management" section.
+    # container restart.  Read-only: nothing in the stack writes secrets —
+    # except ./secrets/nodes/, which the answer service and (via its own
+    # volume list below) the Celery worker write.  See ./secrets/README.md
+    # and the README's "Secrets Management" section.
     - ./secrets:/opt/nautobot/secrets:ro
     # Bind-mount the config so edits only need a restart (not a rebuild).
     # The Dockerfile also COPYs this file so the image stays self-contained
@@ -99,6 +101,24 @@ services:
     <<: [*nautobot-build, *nautobot-env, *nautobot-depends, *nautobot-volumes, *default-logging]
     container_name: nautobot-celery-worker
     command: nautobot-server celery worker --loglevel INFO --events
+    # The shared Nautobot volume list (x-nautobot-volumes) plus ONE scoped
+    # read-write mount: ./secrets/nodes, where nautobot-proxmox's Host
+    # Baseline job stores the per-node service-account API tokens it
+    # creates (text-file Secrets, the same mechanism and directory the answer
+    # service uses for the firstboot deploy token).  YAML merge cannot append
+    # to a list, so the anchor's entries are restated here — keep the two in
+    # step.  Only the worker (where jobs run) gets write access; the web and
+    # beat containers keep the read-only view.  setup.sh creates the
+    # directory group-writable (770, stack GID) so the worker can write it.
+    volumes:
+      - nautobot_media:/opt/nautobot/media
+      - nautobot_git:/opt/nautobot/git
+      - ./jobs:/opt/nautobot/jobs
+      - ./secrets:/opt/nautobot/secrets:ro
+      - ./secrets/nodes:/opt/nautobot/secrets/nodes
+      - ./nautobot_config.py:/opt/nautobot/nautobot_config.py:ro
+      - ./certs/nautobot.crt:/opt/nautobot/nautobot.crt:ro
+      - ./certs/nautobot.key:/opt/nautobot/nautobot.key:ro
     environment:
       # Nautobot >= 2.4.24 / 3.0.1 (off by default): the worker touches
       # /tmp/nautobot_celery_worker_heartbeat every 1 s and creates
@@ -395,10 +415,11 @@ services:
   # developing the service or working offline).
   #
   # NOTE on ./secrets: the stack's rule is "nothing writes secrets" — this
-  # service is the deliberate exception.  It writes ONLY under
+  # service is a deliberate exception.  It writes ONLY under
   # ./secrets/nodes/ (per-node Proxmox API tokens captured at firstboot) and
-  # reads ./secrets/root_password_hash.  Nautobot still mounts the same
-  # directory read-only.
+  # reads ./secrets/root_password_hash.  The only other writer is the Celery
+  # worker, into the same ./secrets/nodes/ (service-account tokens created by
+  # the Host Baseline job); the web and beat containers mount it read-only.
   answer-service:
     <<: *default-logging
     build:

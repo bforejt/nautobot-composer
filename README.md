@@ -64,7 +64,9 @@ Three `setup.sh` flags collapse its getting-started into commands:
 enables its jobs, and runs its bootstrap (runs after the start/wait phases;
 idempotent; repo URL/branch via `NFV_JOBS_REPO_*` in `.env`);
 `--nfv-secrets` prompts (hidden input) through the standard secret values,
-storing each via `add-secret.sh`; `--enable-forge` activates the answer
+storing each via `add-secret.sh` (the Host Baseline job's per-user SNMPv3
+passphrases, `snmpv3_<user>_auth` / `_priv`, are site-specific names —
+supply those with `./add-secret.sh` directly); `--enable-forge` activates the answer
 service's media forge (pair with `--with-firmware` — it publishes into the
 firmware server's volume; see the Answer Service section). The canonical
 full-lab bring-up:
@@ -484,7 +486,7 @@ Rotation is step 1 alone: the provider re-reads the file on every access, so the
 
 ### Security model
 
-- Secret values sit on the host in plaintext at mode `640` — the **same trust level as `.env`**, which already holds the database and admin credentials. Nautobot's mount is read-only; one deliberate, scoped exception exists to "nothing in the stack writes secrets": the opt-in [Answer Service](#answer-service-optional) writes **only** under `./secrets/nodes/` — per-node Proxmox API tokens it captures at a freshly installed machine's first boot, so no human ever handles those values.
+- Secret values sit on the host in plaintext at mode `640` — the **same trust level as `.env`**, which already holds the database and admin credentials. Nautobot's mount is read-only; one deliberate, scoped exception exists to "nothing in the stack writes secrets": the directory `./secrets/nodes/` — per-node Proxmox API tokens no human ever handles. Two writers, nothing else: the opt-in [Answer Service](#answer-service-optional) (the token it captures at a freshly installed machine's first boot) and the **Celery worker**, the only Nautobot container with a read-write mount of that one directory (the service-account tokens nautobot-proxmox's *Host Baseline* job creates — Datadog, PDM). `setup.sh` makes it group-writable (`770`) for the stack GID; the web and beat containers keep the read-only view.
 - The text-file provider reads any path the *container* user can read, not just `./secrets/` — a Nautobot user permitted to create Secrets and view their values could point one at `nautobot_config.py`. That is inherent to the provider; the control is Nautobot RBAC on `extras | secret` permissions.
 - `backup.sh` deliberately does **not** back up `./secrets/` — keep the source of truth in a password manager or vault and treat the files as a repopulatable cache. `reset.sh` leaves them untouched (host files, like `./jobs`). Exception: `./secrets/nodes/` is *not* repopulatable — see the [Answer Service](#answer-service-optional) backup notes.
 - Everything in `secrets/` except its README is gitignored.
@@ -747,7 +749,7 @@ workflow: its `docs/baremetal-install.md` "media forge" section.
 **What to back up** (not covered by `backup.sh`, which handles database + media):
 
 - `answer-service/certs/` — the TLS keypair. Its SHA256 fingerprint is **baked into prepared installer ISOs/PXE artifacts**; losing the key means regenerating it *and* re-preparing all installer media.
-- `./secrets/nodes/` — per-node Proxmox API tokens captured at firstboot. Unlike the rest of `./secrets/` these are **not** a repopulatable cache: a lost token is recoverable only by reinstalling that node.
+- `./secrets/nodes/` — per-node Proxmox API tokens captured at firstboot. Unlike the rest of `./secrets/` these are **not** a repopulatable cache: a lost deploy token is recoverable only by reinstalling that node. (The service-account tokens the Host Baseline job stores beside them are recoverable by re-running that job: a token whose Secret is missing is rotated.)
 - The `nautobot_answer_data` volume — one-time install keys and archived install reports (losing it mid-install strands that install; otherwise low-value).
 
 ## TACACS+ Server (Optional)
