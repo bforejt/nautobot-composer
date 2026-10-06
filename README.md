@@ -61,8 +61,9 @@ The nautobot-proxmox jobs run on **Nautobot 2.4 and 3.x** (validated on
 2.4.30 and 3.2 — see that repo's Requirements); pick your train with `-v`.
 Three `setup.sh` flags collapse its getting-started into commands:
 `--with-nfv-jobs` registers the repo as a jobs Git Repository, syncs it,
-enables its jobs, and runs its bootstrap (runs after the start/wait phases;
-idempotent; repo URL/branch via `NFV_JOBS_REPO_*` in `.env`);
+enables its jobs, and runs its bootstrap (runs after the start/wait phases
+and waits up to 5 minutes for a Celery worker to register; idempotent; repo
+URL/branch via `NFV_JOBS_REPO_*` in `.env`);
 `--nfv-secrets` prompts (hidden input) through the standard secret values,
 storing each via `add-secret.sh` (the Host Baseline job's per-user SNMPv3
 passphrases, `snmpv3_<user>_auth` / `_priv`, are site-specific names —
@@ -905,6 +906,18 @@ docker inspect --format '{{range .State.Health.Log}}{{.Start}} exit={{.ExitCode}
 ```
 
 If the files are missing on a supported version, the process is genuinely stuck or never reached ready — `docker compose logs --tail 100 celery_worker` (or `celery_beat`) shows why. If the heartbeat is stale but the process is alive, the worker has lost its broker connection (Nautobot 3.2+ stops the heartbeat when Redis is unreachable); check `docker compose logs redis`.
+
+### `--with-nfv-jobs` stops with "REFUSED (no Celery worker)"
+
+The repo sync and the bootstrap run are Celery tasks, and Nautobot answers `503 Service Unavailable` ("No celery workers running") to every request that would queue one while no worker is registered. `--wait` only waits for the web container, and a `--build --start` run usually recreates the worker too, which then needs another 30-60 s to register. The bring-up therefore retries the 503 for up to 5 minutes; this refusal means no worker registered in that time.
+
+**Fix:** `docker compose ps celery_worker` should show `healthy`. If it doesn't, `docker compose logs --tail 100 celery_worker` shows why (see [`celery_worker` or `celery_beat` reports unhealthy](#celery_worker-or-celery_beat-reports-unhealthy)). Once it is healthy, re-run only the bring-up, without `--build`/`--start` so nothing is recreated: `./setup.sh -v <your train> --with-nfv-jobs`.
+
+### `--with-nfv-jobs` stops with "REFUSED (Nautobot API error)" or "REFUSED (Nautobot API unreachable)"
+
+A Nautobot API call in the bring-up failed. The message names the call, the HTTP status and Nautobot's reason. Common causes: `401`/`403` means `NAUTOBOT_SUPERUSER_API_TOKEN` in `.env` doesn't match a token in Nautobot (see ["I lost the admin password / API token"](#i-lost-the-admin-password--api-token)); `400` on `POST /extras/git-repositories/` means a repository with that name already exists under a different URL (rename it, or set `NFV_JOBS_REPO_URL` to match it); "unreachable" means nothing answered on `https://localhost` — check `docker compose ps nautobot`.
+
+**Fix:** correct the cause, then re-run `./setup.sh -v <your train> --with-nfv-jobs` (it is idempotent).
 
 ### `./load-test-data.sh` fails with unique-constraint errors
 
