@@ -7,9 +7,12 @@ renders a per-node Proxmox answer file, then captures the node's firstboot
 credential phone-home (per-node API token → text-file Secrets under
 `../secrets/nodes/` + a SecretsGroup) and the post-install webhook. Full
 architecture and runbook: `docs/baremetal-install.md` in the nautobot-proxmox
-repo (built from that repo's `bmc/` directory, fetched over git at build time
-by default — set `ANSWER_SERVICE_BUILD_CONTEXT=../nautobot-proxmox/bmc` in
-`.env` to build from a local sibling checkout instead).
+repo. The image is that repo's published
+`ghcr.io/bforejt/nautobot-proxmox-answer-service`, pulled at the tag
+`ANSWER_SERVICE_VERSION` pins in `.env` (default `v0.1.0`); a local
+`ANSWER_SERVICE_BUILD_CONTEXT=../nautobot-proxmox/bmc` builds from a sibling
+checkout for development only. What any deployment must provide, and how
+this stack does: that repo's `docs/platform-contract.md`.
 
 ## One-time setup
 
@@ -18,8 +21,9 @@ does steps 1–3 for you — it generates the TLS keypair and writes its
 `ANSWER_CERT_FINGERPRINT` into `.env`, generates a root password hash (and
 prints the root password once), auto-fills `ANSWER_PUBLIC_URL` from the host's
 primary IP and (on the lab tier) `ANSWER_NAUTOBOT_TOKEN` from the generated
-superuser token, and reports the build context (the git-URL default needs no
-local checkout; a local-path override is checked for existence). It never
+superuser token, and reports the image pin with the pull recipe
+(`--answer-service-version vX.Y.Z` moves it; a local build-context override is
+checked for existence). It never
 overwrites values you've already set. Review the two auto-filled values
 (override for multi-homed hosts / non-lab tokens), then start it (step 4).
 
@@ -52,11 +56,19 @@ Do it manually instead if you prefer:
    mkpasswd -m sha-512 > ../secrets/root_password_hash   # or: openssl passwd -6
    ```
 
-4. Start it:
+4. Pull the pinned image and start it:
 
    ```bash
-   docker compose --profile answer-service up -d --build
+   docker compose --profile answer-service pull answer-service
+   docker compose --profile answer-service up -d
    ```
+
+   The tag comes from `ANSWER_SERVICE_VERSION` in `.env` (default `v0.1.0`).
+   The nautobot-proxmox jobs refuse a service older than they require, so
+   after syncing that repo in Nautobot move the pin to a tag the jobs accept
+   (`./setup.sh --answer-service-version vX.Y.Z`, or edit `.env`) and pull
+   again. Developing the service: set `ANSWER_SERVICE_BUILD_CONTEXT` to a
+   checkout and use `up -d --build answer-service` instead.
 
 ## Notes
 
