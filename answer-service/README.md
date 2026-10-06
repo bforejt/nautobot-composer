@@ -66,9 +66,13 @@ Do it manually instead if you prefer:
    The tag comes from `ANSWER_SERVICE_VERSION` in `.env` (default `v0.1.0`).
    The nautobot-proxmox jobs refuse a service older than they require, so
    after syncing that repo in Nautobot move the pin to a tag the jobs accept
-   (`./setup.sh --answer-service-version vX.Y.Z`, or edit `.env`) and pull
-   again. Developing the service: set `ANSWER_SERVICE_BUILD_CONTEXT` to a
-   checkout and use `up -d --build answer-service` instead.
+   (`./setup.sh -v <your train> --answer-service-version vX.Y.Z` — pass `-v`
+   on an existing install, setup.sh re-pins `NAUTOBOT_VERSION` every run — or
+   edit `.env`) and pull again. Developing the service: set
+   `ANSWER_SERVICE_BUILD_CONTEXT` to a checkout and use
+   `up -d --build answer-service` instead; back to the published image with
+   `docker compose pull --policy always answer-service` then `up -d` (a plain
+   pull skips the tag already present).
 
 ## Notes
 

@@ -422,8 +422,11 @@ services:
   # build answer-service` reproduces the pinned version when the registry is
   # unreachable.  Only an explicit ANSWER_SERVICE_BUILD_CONTEXT (a path such
   # as ../nautobot-proxmox/bmc, for developing the service) builds
-  # unversioned local source — tagged with the pinned image name, so a later
-  # `docker compose pull answer-service` replaces it again.
+  # unversioned local source — tagged with the pinned image name.  A plain
+  # `docker compose pull` fetches only a tag NOT yet present locally (the
+  # pull_policy below governs `pull` too), so a local build under the pinned
+  # name stays put until `docker compose pull --policy always answer-service
+  # && docker compose up -d` puts the published image back.
   #
   # NOTE on ./secrets: the stack's rule is "nothing writes secrets" — this
   # service is a deliberate exception.  It writes ONLY under
@@ -436,7 +439,10 @@ services:
     image: ghcr.io/bforejt/nautobot-proxmox-answer-service:${ANSWER_SERVICE_VERSION:-v0.1.0}
     # Compose with both image and build: `missing` (set explicitly — the default
     # with a build section is to build) pulls the pinned image and builds only
-    # when the pull fails; `up --build` / `docker compose build` always build.
+    # when the pull fails; `up --build` / `docker compose build` always build
+    # (setup.sh --build therefore leaves this service out and lets `up -d` pull
+    # it).  `docker compose pull` honours it too: a plain pull skips a tag that
+    # is already present locally; `pull --policy always` replaces it.
     pull_policy: missing
     build:
       context: ${ANSWER_SERVICE_BUILD_CONTEXT:-https://github.com/bforejt/nautobot-proxmox.git#${ANSWER_SERVICE_VERSION:-v0.1.0}:bmc}

@@ -182,8 +182,10 @@ Options:
                           (ANSWER_SERVICE_VERSION), e.g. v0.1.0.  The
                           nautobot-proxmox jobs refuse a service older than
                           they require, so after a repo sync move the pin to
-                          a tag they accept and pull.  Written even when the
-                          profile is off (inert until it is enabled)
+                          a tag they accept and pull.  Pass -v too on an
+                          existing install (every run re-pins NAUTOBOT_VERSION
+                          to its default).  Written even when the profile is
+                          off (inert until it is enabled)
       --without-answer-service
                           Disable the answer-service add-on
       --enable-forge      Turn on the answer service's media forge (implies
@@ -227,7 +229,10 @@ Options:
                           reject the self-signed cert; the HTTPS variant is
                           kept alongside in FIRMWARE_BASE_URL_HTTPS for the
                           Register job's per-run opt-in
-      --build             After setup, run 'docker compose build'
+      --build             After setup, run 'docker compose build' — every
+                          service but the answer service, which 'up -d'
+                          pulls at its pin (built too only when
+                          ANSWER_SERVICE_BUILD_CONTEXT is set)
       --start             After setup (and --build if given), run
                           'docker compose up -d'
       --wait              After --start, poll the nautobot container's
@@ -255,7 +260,10 @@ Examples:
 
   # Move the answer service to a newer published tag (after syncing the
   # nautobot-proxmox jobs — they refuse an older service), then pull it.
-  ./setup.sh --answer-service-version v0.2.0 && docker compose pull answer-service && docker compose up -d
+  # Pass -v on an existing install: every run re-pins NAUTOBOT_VERSION to its
+  # default (editing ANSWER_SERVICE_VERSION in .env by hand avoids that).
+  ./setup.sh -v 3.1 --answer-service-version v0.2.0
+  docker compose pull answer-service && docker compose up -d
 
   # Enable the firmware server on an existing install and start it.
   ./setup.sh --with-firmware --start
@@ -1474,7 +1482,9 @@ if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
                 if [[ -f "${ASVC_CTX_ABS}/answer_service/Dockerfile" ]]; then
                     echo "    build context override OK: ${ASVC_CTX}"
                     echo "      (development build — unversioned local source, tagged with the"
-                    echo "       pinned image name; 'docker compose pull answer-service' replaces it)"
+                    echo "       pinned image name; a plain pull skips a tag already present, so"
+                    echo "       'docker compose pull --policy always answer-service && docker"
+                    echo "       compose up -d' puts the published image back)"
                 else
                     echo "    WARNING: build context '${ASVC_CTX}' not found (expected a"
                     echo "             nautobot-proxmox checkout with answer_service/Dockerfile)."
@@ -1670,7 +1680,7 @@ if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
             "
             echo "    secrets/answer_service_admin_token written."
         fi
-        echo "    Forge ON.  Apply: docker compose --profile answer-service up -d --build"
+        echo "    Forge ON.  Apply: docker compose --profile answer-service up -d"
         echo "      then re-run 'Bootstrap NFV Data Model' and run 'Prepare Installer Media (Media Forge)'."
     elif [[ "$FORGE" == "off" ]]; then
         if grep -qE '^ANSWER_ADMIN_ENABLED=' "$ENV_FILE"; then
@@ -1833,8 +1843,29 @@ echo "Setup complete."
 
 if [[ "$DO_BUILD" == true ]]; then
     echo ""
-    echo "Building the Nautobot image (docker compose build)..."
-    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" build
+    # The answer service is PULLED at its pin (docker-compose.yml: image +
+    # pull_policy missing); its build section is only the registry-unreachable
+    # fallback.  A bare `compose build` would build it from the git tag and
+    # tag the result with the pinned image name — after which a plain `pull`
+    # skips it as already present and the host runs a local build believing
+    # it is on the published image.  So build every OTHER service and let
+    # `up -d` pull the pin.  A local ANSWER_SERVICE_BUILD_CONTEXT means the
+    # service is being developed here: then it is built like the rest.
+    if [[ ",${NEW_PROFILES}," == *,answer-service,* && -z "$(env_value ANSWER_SERVICE_BUILD_CONTEXT)" ]]; then
+        echo "Building the stack's images (docker compose build; the answer service is"
+        echo "  pulled at its pin by 'docker compose up -d', not built)..."
+        BUILD_SERVICES=()
+        while IFS= read -r svc; do
+            [[ -z "$svc" || "$svc" == "answer-service" ]] && continue
+            BUILD_SERVICES+=( "$svc" )
+        done < <(docker compose -f "${SCRIPT_DIR}/docker-compose.yml" config --services)
+        if [[ ${#BUILD_SERVICES[@]} -gt 0 ]]; then
+            docker compose -f "${SCRIPT_DIR}/docker-compose.yml" build "${BUILD_SERVICES[@]}"
+        fi
+    else
+        echo "Building the Nautobot image (docker compose build)..."
+        docker compose -f "${SCRIPT_DIR}/docker-compose.yml" build
+    fi
 fi
 
 if [[ "$DO_START" == true ]]; then
@@ -2014,7 +2045,12 @@ if [[ "$DO_START" == true ]]; then
 else
     echo "Next steps:"
     echo "  1. Review .env and adjust NAUTOBOT_ALLOWED_HOSTS for production."
-    echo "  2. Build:    docker compose build"
+    if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
+        echo "  2. Build:    ./setup.sh --build   (a bare 'docker compose build' would also"
+        echo "               build the answer service from its tag instead of pulling the pin)"
+    else
+        echo "  2. Build:    docker compose build"
+    fi
     echo "  3. Start:    docker compose up -d"
     echo "  Or rerun:    ./setup.sh --build --start --wait"
 fi
