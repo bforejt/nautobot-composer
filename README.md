@@ -14,7 +14,7 @@ Production-ready Docker Compose deployment for [Nautobot 3.x](https://docs.nauto
 | **GitLab CE** | `gitlab/gitlab-ce:latest` | Git repository server for config backups (opt-in) |
 | **Filebrowser** | `filebrowser/filebrowser:v2.63.17` | Authenticated web UI to upload/manage firmware images (opt-in — [Firmware Server](#firmware-server-optional)) |
 | **nginx** | Custom (based on `nginx:1.30-alpine`) | Read-only, network-restricted device-download endpoint for firmware (opt-in) |
-| **Answer Service** | Custom (built from the [nautobot-proxmox](https://github.com/bforejt/nautobot-proxmox) repo via a git build context) | SoT-driven bare-metal Proxmox install engine (opt-in — [Answer Service](#answer-service-optional)) |
+| **Answer Service** | `ghcr.io/bforejt/nautobot-proxmox-answer-service:<pin>` (published by the [nautobot-proxmox](https://github.com/bforejt/nautobot-proxmox) repo's tag workflow, pinned by `ANSWER_SERVICE_VERSION`; built locally only for development) | SoT-driven bare-metal Proxmox install engine (opt-in — [Answer Service](#answer-service-optional)) |
 | **tac_plus-ng** | Custom (built from a pinned [event-driven-servers](https://github.com/MarcJHuber/event-driven-servers) commit) | TACACS+ device AAA — AD-backed users, Nautobot-rendered device inventory (opt-in — [TACACS+ Server](#tacacs-server-optional)) |
 
 ## Prerequisites
@@ -75,6 +75,21 @@ full-lab bring-up:
 ./setup.sh --with-firmware --enable-forge --build --start --wait --with-nfv-jobs
 ./setup.sh --nfv-secrets     # then supply the credential values
 ```
+
+**Keep the two halves in step.** The jobs Nautobot syncs from the repo and
+the answer-service image are released together under one tag, and this
+stack runs the image at a pinned version (`ANSWER_SERVICE_VERSION` in
+`.env`, default `v0.1.0`). After the Proxmox repo is synced in Nautobot —
+by `--with-nfv-jobs` or a manual sync — the pinned service must be pulled to
+a version the jobs accept: the jobs' version handshake (`GET /info`
+`version` against the jobs' minimum) refuses an older service before any
+BMC or node is touched. Move the pin with
+`./setup.sh -v <your train> --answer-service-version vX.Y.Z` (pass `-v` on
+an existing install — `setup.sh` re-pins `NAUTOBOT_VERSION` to its default
+on every run; editing `.env` by hand avoids that), then
+`docker compose pull answer-service && docker compose up -d`. What any
+deployment of the install loop must provide, and how this stack satisfies
+each item, is the Proxmox repo's `docs/platform-contract.md`.
 
 ## Project Structure
 
@@ -698,17 +713,17 @@ The Register job validates the image **from the Celery worker**, so the URL must
 
 The SoT-backed engine of the [nautobot-proxmox](https://github.com/bforejt/nautobot-proxmox) bare-metal install loop, gated behind the `answer-service` Compose profile (off by default, like GitLab and Firmware). An installing machine's Proxmox auto-installer POSTs its identity (DMI serial, NIC MACs) here; the service matches it against Nautobot's **serial allowlist** and returns a per-node answer file, then captures the node's firstboot credential phone-home (its per-node Proxmox API token → text-file Secrets under `./secrets/nodes/` + a Secrets Group) and the post-install webhook (provisioning state). Machines Nautobot doesn't expect get a `403` and install nothing — which is what makes a standing install service safe to run.
 
-You need it only if you use the nautobot-proxmox bare-metal install track; the full architecture, security model, and runbook live in that repo's `docs/baremetal-install.md`. One-time setup (TLS keypair, `.env` values, root password hash) is in [`answer-service/README.md`](answer-service/README.md). The image builds from the nautobot-proxmox repo's `bmc/` directory **fetched over git at build time** (BuildKit git context — no local checkout required; the Docker daemon needs network). To build from a local checkout instead (developing the service, or offline), set `ANSWER_SERVICE_BUILD_CONTEXT=../nautobot-proxmox/bmc` in `.env`.
+You need it only if you use the nautobot-proxmox bare-metal install track; the full architecture, security model, and runbook live in that repo's `docs/baremetal-install.md`. One-time setup (TLS keypair, `.env` values, root password hash) is in [`answer-service/README.md`](answer-service/README.md). The service runs the **published image** `ghcr.io/bforejt/nautobot-proxmox-answer-service` at the tag `ANSWER_SERVICE_VERSION` pins in `.env` (default `v0.1.0`; the Proxmox repo's tag workflow publishes one tag for the jobs and the service together). Change the pin with `./setup.sh --answer-service-version vX.Y.Z` or by editing `.env`, then pull — the jobs refuse a service older than they require (see [NFV convenience flags](#nfv-convenience-flags-nautobot-proxmox-integration)). Without a local `ANSWER_SERVICE_BUILD_CONTEXT`, `docker compose build answer-service` rebuilds that same tag from the repo over git (the fallback when the registry is unreachable — no checkout; the Docker daemon needs network). For developing the service, set `ANSWER_SERVICE_BUILD_CONTEXT=../nautobot-proxmox/bmc` in `.env`: `docker compose up -d --build answer-service` then builds unversioned local source under the pinned image name. A plain `docker compose pull` fetches only a tag not yet present locally, so `docker compose pull --policy always answer-service && docker compose up -d` puts the published image back. `./setup.sh --build` leaves the service out of the build (and `up -d` pulls it); a bare `docker compose build` or `up --build` with the profile active builds it from the tag instead — undo that the same way.
 
 **Start it** — persistent, same pattern as the firmware profile (comes back after reboot, covered by the systemd unit):
 
 ```bash
 ./setup.sh --with-answer-service   # enables the profile + generates TLS keypair,
                                    # fingerprint, URLs, and the node root hash
-docker compose up -d --build
+docker compose pull answer-service && docker compose up -d
 ```
 
-Ad-hoc instead: `docker compose --profile answer-service up -d --build`.
+Ad-hoc instead: `docker compose --profile answer-service pull answer-service && docker compose --profile answer-service up -d`.
 
 **Tuning knobs.** The container deliberately has no `env_file` (the stack
 `.env` holds DB credentials it must not see), so every service setting is an
@@ -740,7 +755,8 @@ be enabled only on the lab/build instance — one command does it all:
 `ANSWER_ADMIN_TOKEN` once, mirrors it into
 `secrets/answer_service_admin_token` for the Nautobot job, and defaults
 `ANSWER_FIRMWARE_PUBLISH_DIR` + `ANSWER_FIRMWARE_BASE_URL`), then
-`docker compose --profile answer-service up -d --build`. `--disable-forge`
+`docker compose --profile answer-service up -d` (recreates the container
+with the new values). `--disable-forge`
 flips it back off (token and secret kept). The variables can also be set by
 hand (see `env.example`). Full variable
 reference: the nautobot-proxmox repo's `bmc/answer_service/README.md`;

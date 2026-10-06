@@ -124,8 +124,9 @@ Usage: $0 [--force] [--keep-gitlab] [--keep-firmware] [--keep-answer-service]
   --keep-answer-service         Leave the answer-service add-on alone: its
                                 container keeps running, the
                                 nautobot_answer_data volume (one-time install
-                                keys, install reports) and built image
-                                survive.  Host bind mounts (./secrets,
+                                keys, install reports) and a pre-pin local
+                                build survive (the pulled ghcr.io image is
+                                never swept).  Host bind mounts (./secrets,
                                 ./answer-service/certs) are never touched by
                                 reset either way.
                                 NOTE: the core reset wipes Nautobot's DB, so
@@ -275,7 +276,7 @@ else
 fi
 
 if [[ "$KEEP_ANSWER_SERVICE" == true ]]; then
-    KEPT_SUMMARY+=( "Answer-service add-on (container, volume: ${ANSWER_VOLUMES[*]}, built image)" )
+    KEPT_SUMMARY+=( "Answer-service add-on (container, volume: ${ANSWER_VOLUMES[*]}, any pre-pin local build)" )
 else
     ALL_VOLUMES+=( "${ANSWER_VOLUMES[@]}" )
 fi
@@ -609,12 +610,15 @@ echo ""
 echo "[4/4] Removing built images..."
 
 # Compose-built images follow the pattern: <project>-<service>.  This includes
-# the firmware-download and answer-service images (built from their in-repo
-# Dockerfiles), which have no explicit image: name and so are tagged
-# <project>-firmware-download / <project>-answer-service — each kept back from
-# the sweep under its --keep-* flag, since a kept-but-imageless add-on couldn't
-# restart after an image prune.  PROJECT_NAME is computed once at the top of
-# this script.
+# the firmware-download image (built from its in-repo Dockerfile, no explicit
+# image: name, so tagged <project>-firmware-download) — kept back from the
+# sweep under --keep-firmware, since a kept-but-imageless add-on couldn't
+# restart after an image prune.  The answer service now runs the PULLED
+# ghcr.io/bforejt/nautobot-proxmox-answer-service:<pin> image (decision #56),
+# which this <project>-* sweep never touches; a <project>-answer-service image
+# is a build from before the pin (or a dev build before image: existed) and is
+# swept unless --keep-answer-service.  PROJECT_NAME is computed once at the top
+# of this script.
 IMAGE_IDS=()
 while IFS=' ' read -r repo id; do
     [[ -z "$id" ]] && continue

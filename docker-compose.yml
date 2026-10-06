@@ -398,7 +398,7 @@ services:
   # --------------------------------------------------------------------------
   # NFV Answer Service — bare-metal install engine  [profile: answer-service]
   # --------------------------------------------------------------------------
-  # Opt-in: docker compose --profile answer-service up -d --build
+  # Opt-in: ./setup.sh --with-answer-service   (or: docker compose --profile answer-service up -d)
   # The SoT-backed brain of the nautobot-proxmox bare-metal install loop: the
   # Proxmox auto-installer POSTs a machine's identity here; this service
   # matches it against Nautobot (serial allowlist) and renders a per-node
@@ -407,12 +407,26 @@ services:
   # webhook (provisioning_state).  Full docs: nautobot-proxmox repo,
   # docs/baremetal-install.md.
   #
-  # Build context defaults to the nautobot-proxmox repo's bmc/ directory
-  # FETCHED OVER GIT at build time (BuildKit git context — no local checkout
-  # needed; the daemon needs network + the repo to be fetchable).  Track a
-  # local sibling checkout instead by setting
-  # ANSWER_SERVICE_BUILD_CONTEXT=../nautobot-proxmox/bmc in .env (useful when
-  # developing the service or working offline).
+  # The image is PULLED at a pinned version (nautobot-proxmox decision #56):
+  # ghcr.io/bforejt/nautobot-proxmox-answer-service:<ANSWER_SERVICE_VERSION>,
+  # default v0.1.0, published by that repo's tag workflow.  One tag releases
+  # both halves — the jobs Nautobot syncs from the repo and this service —
+  # and the jobs refuse (GET /info version handshake) a service older than
+  # they require, so a repo sync is followed by moving the pin to a tag the
+  # jobs accept: `./setup.sh --answer-service-version vX.Y.Z` (or edit .env),
+  # then `docker compose pull answer-service && docker compose up -d`.
+  #
+  # The build section is the fallback, not the normal path.  Its default
+  # context is the SAME tag fetched over git (BuildKit git context — no
+  # checkout; the daemon needs network), so a checkout-less `docker compose
+  # build answer-service` reproduces the pinned version when the registry is
+  # unreachable.  Only an explicit ANSWER_SERVICE_BUILD_CONTEXT (a path such
+  # as ../nautobot-proxmox/bmc, for developing the service) builds
+  # unversioned local source — tagged with the pinned image name.  A plain
+  # `docker compose pull` fetches only a tag NOT yet present locally (the
+  # pull_policy below governs `pull` too), so a local build under the pinned
+  # name stays put until `docker compose pull --policy always answer-service
+  # && docker compose up -d` puts the published image back.
   #
   # NOTE on ./secrets: the stack's rule is "nothing writes secrets" — this
   # service is a deliberate exception.  It writes ONLY under
@@ -422,8 +436,16 @@ services:
   # the Host Baseline job); the web and beat containers mount it read-only.
   answer-service:
     <<: *default-logging
+    image: ghcr.io/bforejt/nautobot-proxmox-answer-service:${ANSWER_SERVICE_VERSION:-v0.1.0}
+    # Compose with both image and build: `missing` (set explicitly — the default
+    # with a build section is to build) pulls the pinned image and builds only
+    # when the pull fails; `up --build` / `docker compose build` always build
+    # (setup.sh --build therefore leaves this service out and lets `up -d` pull
+    # it).  `docker compose pull` honours it too: a plain pull skips a tag that
+    # is already present locally; `pull --policy always` replaces it.
+    pull_policy: missing
     build:
-      context: ${ANSWER_SERVICE_BUILD_CONTEXT:-https://github.com/bforejt/nautobot-proxmox.git#main:bmc}
+      context: ${ANSWER_SERVICE_BUILD_CONTEXT:-https://github.com/bforejt/nautobot-proxmox.git#${ANSWER_SERVICE_VERSION:-v0.1.0}:bmc}
       dockerfile: answer_service/Dockerfile
     container_name: answer-service
     profiles:

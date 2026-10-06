@@ -43,6 +43,9 @@ PROFILE_TACACS=""
 # Explicit device-facing firmware base URL (--firmware-url).  Empty = derive
 # from the host's primary IP where needed (see FIRMWARE_BASE_URL handling).
 FIRMWARE_URL=""
+# Explicit answer-service image tag (--answer-service-version).  Empty = leave
+# the ANSWER_SERVICE_VERSION pin in .env untouched.
+ASVC_PIN=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -133,6 +136,15 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
+        --answer-service-version)
+            ASVC_PIN="${2:-}"
+            if [[ ! "$ASVC_PIN" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "ERROR: --answer-service-version must be a published tag like v0.1.0" >&2
+                echo "       (vMAJOR.MINOR.PATCH — a nautobot-proxmox release tag)." >&2
+                exit 1
+            fi
+            shift 2
+            ;;
         --debug)
             DEBUG_MODE=true
             shift
@@ -140,7 +152,8 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             cat <<'HELP'
 Usage: ./setup.sh [-v VERSION] [-p PYTHON] [--with-gitlab] [--with-firmware]
-                  [--with-answer-service] [--with-tacacs] [--firmware-url URL]
+                  [--with-answer-service] [--answer-service-version TAG]
+                  [--with-tacacs] [--firmware-url URL]
                   [--enable-forge] [--with-nfv-jobs] [--nfv-secrets]
                   [--build] [--start] [--wait] [--debug]
 
@@ -156,10 +169,23 @@ Options:
       --without-firmware  Disable the firmware-server add-on
       --with-answer-service
                           Enable the NFV answer-service add-on (bare-metal
-                          Proxmox install engine).  The image builds from the
-                          nautobot-proxmox repo over git at build time — set
-                          ANSWER_SERVICE_BUILD_CONTEXT in .env to use a local
-                          checkout instead (see README)
+                          Proxmox install engine).  Runs the published image
+                          ghcr.io/bforejt/nautobot-proxmox-answer-service at
+                          the tag ANSWER_SERVICE_VERSION pins in .env
+                          (default v0.1.0): 'docker compose pull
+                          answer-service && docker compose up -d' fetches
+                          it.  ANSWER_SERVICE_BUILD_CONTEXT in .env builds
+                          from a local checkout instead (development only;
+                          see README)
+      --answer-service-version TAG
+                          Pin the answer-service image tag in .env
+                          (ANSWER_SERVICE_VERSION), e.g. v0.1.0.  The
+                          nautobot-proxmox jobs refuse a service older than
+                          they require, so after a repo sync move the pin to
+                          a tag they accept and pull.  Pass -v too on an
+                          existing install (every run re-pins NAUTOBOT_VERSION
+                          to its default).  Written even when the profile is
+                          off (inert until it is enabled)
       --without-answer-service
                           Disable the answer-service add-on
       --enable-forge      Turn on the answer service's media forge (implies
@@ -203,7 +229,10 @@ Options:
                           reject the self-signed cert; the HTTPS variant is
                           kept alongside in FIRMWARE_BASE_URL_HTTPS for the
                           Register job's per-run opt-in
-      --build             After setup, run 'docker compose build'
+      --build             After setup, run 'docker compose build' — every
+                          service but the answer service, which 'up -d'
+                          pulls at its pin (built too only when
+                          ANSWER_SERVICE_BUILD_CONTEXT is set)
       --start             After setup (and --build if given), run
                           'docker compose up -d'
       --wait              After --start, poll the nautobot container's
@@ -228,6 +257,13 @@ Examples:
   # 2.4 and 3.x stacks — pick the train with -v).
   ./setup.sh --with-firmware --enable-forge --build --start --wait --with-nfv-jobs
   ./setup.sh --nfv-secrets     # then supply the credential values
+
+  # Move the answer service to a newer published tag (after syncing the
+  # nautobot-proxmox jobs — they refuse an older service), then pull it.
+  # Pass -v on an existing install: every run re-pins NAUTOBOT_VERSION to its
+  # default (editing ANSWER_SERVICE_VERSION in .env by hand avoids that).
+  ./setup.sh -v 3.1 --answer-service-version v0.2.0
+  docker compose pull answer-service && docker compose up -d
 
   # Enable the firmware server on an existing install and start it.
   ./setup.sh --with-firmware --start
@@ -1380,8 +1416,29 @@ docker run --rm \
     "
 
 # ---------------------------------------------------------------------------
+# Answer service image pin (--answer-service-version).  Written whether or
+# not the profile is enabled — like --firmware-url, the value is inert until
+# it is — so the flag is never silently dropped.  docker-compose.yml reads
+# ANSWER_SERVICE_VERSION (default v0.1.0) for both the image tag and the
+# fallback git build context.
+# ---------------------------------------------------------------------------
+if [[ -n "$ASVC_PIN" ]]; then
+    if grep -qE '^ANSWER_SERVICE_VERSION=' "$ENV_FILE"; then
+        set_env_var ANSWER_SERVICE_VERSION "$ASVC_PIN"
+    else
+        printf '\nANSWER_SERVICE_VERSION=%s\n' "$ASVC_PIN" >> "$ENV_FILE"
+    fi
+    echo "  .env: ANSWER_SERVICE_VERSION=${ASVC_PIN}"
+    if [[ ",${NEW_PROFILES}," != *,answer-service,* ]]; then
+        echo "        (answer-service profile not enabled — the pin takes effect with"
+        echo "         --with-answer-service)"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Answer service one-time setup — only when its profile is enabled.
-#   (1) sibling nautobot-proxmox build context (warn only; can't clone it here)
+#   (1) image pin (ANSWER_SERVICE_VERSION) + pull recipe; a local build-
+#       context override is checked for existence (warn only)
 #   (2) TLS keypair -> answer-service/certs + SHA256 fingerprint -> .env
 #   (3) root password hash for installed nodes -> secrets/root_password_hash
 # The answer service can't start without ANSWER_NAUTOBOT_TOKEN / ANSWER_PUBLIC_URL
@@ -1392,36 +1449,52 @@ if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
     echo ""
     echo "  Answer service enabled — preparing its prerequisites..."
 
-    # (1) Build context.  Default: the nautobot-proxmox repo fetched over git
-    # at build time (BuildKit git context — no local checkout needed).  A git
-    # URL can't be checked from here beyond noting it needs network at build
-    # time; a LOCAL override (path) is checked so `up --build` doesn't fail
-    # cryptically on a missing sibling checkout.
+    # (1) Image.  The service runs the PUBLISHED image at the tag pinned by
+    # ANSWER_SERVICE_VERSION (nautobot-proxmox decision #56; compose default
+    # v0.1.0).  One tag releases both halves of that repo, and the jobs
+    # refuse a service older than they require — so a repo sync
+    # (--with-nfv-jobs) is followed by moving the pin and pulling.  Nothing
+    # to generate here: print the effective pin and the recipe.  A LOCAL
+    # ANSWER_SERVICE_BUILD_CONTEXT (path) is development-only but still
+    # checked, so `up --build` doesn't fail cryptically on a missing sibling
+    # checkout; unset, the fallback build context is the same tag over git.
+    ASVC_PIN_SET="$(env_value ANSWER_SERVICE_VERSION)"
+    echo "    image: ghcr.io/bforejt/nautobot-proxmox-answer-service:${ASVC_PIN_SET:-v0.1.0}"
+    if [[ -z "$ASVC_PIN_SET" ]]; then
+        echo "      (compose default — pin it explicitly with --answer-service-version vX.Y.Z"
+        echo "       or ANSWER_SERVICE_VERSION in .env)"
+    fi
+    echo "      pull:  docker compose pull answer-service && docker compose up -d"
+    echo "      (after syncing the nautobot-proxmox jobs, move the pin to a tag they"
+    echo "       accept and pull again — the jobs refuse an older service)"
     ASVC_CTX="$(env_value ANSWER_SERVICE_BUILD_CONTEXT)"
-    ASVC_CTX="${ASVC_CTX:-https://github.com/bforejt/nautobot-proxmox.git#main:bmc}"
-    case "$ASVC_CTX" in
-        http://*|https://*|git@*|ssh://*)
-            echo "    build context: ${ASVC_CTX}"
-            echo "      (fetched over git at build time — the docker daemon needs network;"
-            echo "       set ANSWER_SERVICE_BUILD_CONTEXT=../nautobot-proxmox/bmc in .env to"
-            echo "       build from a local checkout instead)"
-            ;;
-        *)
-            case "$ASVC_CTX" in
-                /*) ASVC_CTX_ABS="$ASVC_CTX" ;;
-                *)  ASVC_CTX_ABS="${SCRIPT_DIR}/${ASVC_CTX}" ;;
-            esac
-            if [[ -f "${ASVC_CTX_ABS}/answer_service/Dockerfile" ]]; then
-                echo "    build context OK: ${ASVC_CTX}"
-            else
-                echo "    WARNING: build context '${ASVC_CTX}' not found (expected a"
-                echo "             nautobot-proxmox checkout with answer_service/Dockerfile)."
-                echo "             'docker compose --profile answer-service up -d --build' will fail"
-                echo "             until it exists — or unset ANSWER_SERVICE_BUILD_CONTEXT in .env"
-                echo "             to use the default git-URL context (no checkout needed)."
-            fi
-            ;;
-    esac
+    if [[ -n "$ASVC_CTX" ]]; then
+        case "$ASVC_CTX" in
+            http://*|https://*|git@*|ssh://*)
+                echo "    build context override: ${ASVC_CTX}"
+                echo "      (fetched over git at build time — the docker daemon needs network)"
+                ;;
+            *)
+                case "$ASVC_CTX" in
+                    /*) ASVC_CTX_ABS="$ASVC_CTX" ;;
+                    *)  ASVC_CTX_ABS="${SCRIPT_DIR}/${ASVC_CTX}" ;;
+                esac
+                if [[ -f "${ASVC_CTX_ABS}/answer_service/Dockerfile" ]]; then
+                    echo "    build context override OK: ${ASVC_CTX}"
+                    echo "      (development build — unversioned local source, tagged with the"
+                    echo "       pinned image name; a plain pull skips a tag already present, so"
+                    echo "       'docker compose pull --policy always answer-service && docker"
+                    echo "       compose up -d' puts the published image back)"
+                else
+                    echo "    WARNING: build context '${ASVC_CTX}' not found (expected a"
+                    echo "             nautobot-proxmox checkout with answer_service/Dockerfile)."
+                    echo "             'docker compose --profile answer-service up -d --build' will fail"
+                    echo "             until it exists — or unset ANSWER_SERVICE_BUILD_CONTEXT in .env"
+                    echo "             to pull the pinned image (no checkout needed)."
+                fi
+                ;;
+        esac
+    fi
 
     # (2) TLS keypair (nodes pin it by fingerprint).  NEVER regenerate an
     # existing cert — its fingerprint is baked into any prepared installer media.
@@ -1607,7 +1680,7 @@ if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
             "
             echo "    secrets/answer_service_admin_token written."
         fi
-        echo "    Forge ON.  Apply: docker compose --profile answer-service up -d --build"
+        echo "    Forge ON.  Apply: docker compose --profile answer-service up -d"
         echo "      then re-run 'Bootstrap NFV Data Model' and run 'Prepare Installer Media (Media Forge)'."
     elif [[ "$FORGE" == "off" ]]; then
         if grep -qE '^ANSWER_ADMIN_ENABLED=' "$ENV_FILE"; then
@@ -1770,8 +1843,29 @@ echo "Setup complete."
 
 if [[ "$DO_BUILD" == true ]]; then
     echo ""
-    echo "Building the Nautobot image (docker compose build)..."
-    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" build
+    # The answer service is PULLED at its pin (docker-compose.yml: image +
+    # pull_policy missing); its build section is only the registry-unreachable
+    # fallback.  A bare `compose build` would build it from the git tag and
+    # tag the result with the pinned image name — after which a plain `pull`
+    # skips it as already present and the host runs a local build believing
+    # it is on the published image.  So build every OTHER service and let
+    # `up -d` pull the pin.  A local ANSWER_SERVICE_BUILD_CONTEXT means the
+    # service is being developed here: then it is built like the rest.
+    if [[ ",${NEW_PROFILES}," == *,answer-service,* && -z "$(env_value ANSWER_SERVICE_BUILD_CONTEXT)" ]]; then
+        echo "Building the stack's images (docker compose build; the answer service is"
+        echo "  pulled at its pin by 'docker compose up -d', not built)..."
+        BUILD_SERVICES=()
+        while IFS= read -r svc; do
+            [[ -z "$svc" || "$svc" == "answer-service" ]] && continue
+            BUILD_SERVICES+=( "$svc" )
+        done < <(docker compose -f "${SCRIPT_DIR}/docker-compose.yml" config --services)
+        if [[ ${#BUILD_SERVICES[@]} -gt 0 ]]; then
+            docker compose -f "${SCRIPT_DIR}/docker-compose.yml" build "${BUILD_SERVICES[@]}"
+        fi
+    else
+        echo "Building the Nautobot image (docker compose build)..."
+        docker compose -f "${SCRIPT_DIR}/docker-compose.yml" build
+    fi
 fi
 
 if [[ "$DO_START" == true ]]; then
@@ -1951,7 +2045,12 @@ if [[ "$DO_START" == true ]]; then
 else
     echo "Next steps:"
     echo "  1. Review .env and adjust NAUTOBOT_ALLOWED_HOSTS for production."
-    echo "  2. Build:    docker compose build"
+    if [[ ",${NEW_PROFILES}," == *,answer-service,* ]]; then
+        echo "  2. Build:    ./setup.sh --build   (a bare 'docker compose build' would also"
+        echo "               build the answer service from its tag instead of pulling the pin)"
+    else
+        echo "  2. Build:    docker compose build"
+    fi
     echo "  3. Start:    docker compose up -d"
     echo "  Or rerun:    ./setup.sh --build --start --wait"
 fi
