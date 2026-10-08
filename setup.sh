@@ -205,8 +205,10 @@ Options:
                           getting-started §1.  Runs after the start/wait
                           phases, so pair with --build --start --wait on a
                           fresh install, or run against an already-healthy
-                          stack; idempotent.  Works on Nautobot 2.4 and
-                          3.x stacks.  Repo URL/branch overridable via
+                          stack; idempotent.  Waits up to 5 minutes for a
+                          Celery worker to register (one recreated by the
+                          same run is still starting).  Works on Nautobot
+                          2.4 and 3.x stacks.  Repo URL/branch overridable via
                           NFV_JOBS_REPO_URL / NFV_JOBS_REPO_BRANCH in .env.
       --nfv-secrets       Prompt (hidden input) through the standard NFV
                           secret VALUES — jumphost console password, XCC and
@@ -1952,13 +1954,37 @@ if [[ "$NFV_JOBS" == "on" ]]; then
         NFV_REPO_URL="$(env_value NFV_JOBS_REPO_URL)" \
         NFV_REPO_BRANCH="$(env_value NFV_JOBS_REPO_BRANCH)" \
         python3 - <<'NFVPY' || echo "    ACTION NEEDED: bring-up incomplete — see messages above."
-import json, os, ssl, sys, time, urllib.request
+import json, os, ssl, sys, time, urllib.error, urllib.request
 
 CTX = ssl._create_unverified_context()
 TOKEN = os.environ["NFV_TOKEN"]
 REPO_URL = os.environ.get("NFV_REPO_URL") or "https://github.com/bforejt/nautobot-proxmox.git"
 BRANCH = os.environ.get("NFV_REPO_BRANCH") or "main"
 BASE = "https://localhost/api"
+# --wait only covers the web container.  When `up -d` has just (re)created
+# the Celery worker, it needs ~30-60 s more to register, and until then
+# Nautobot answers every enqueue (sync, job run) with 503 "No celery workers
+# running".  Retry that for this long before refusing.
+WORKER_WAIT = 300
+
+def detail_of(err):
+    try:
+        d = json.loads(err.read() or b"{}")
+        return str(d.get("detail", d) if isinstance(d, dict) else d)[:200]
+    except Exception:
+        return ""
+
+# Fail closed with a named refusal, not a traceback, on any API error.  The
+# token is only ever in the request headers, never in what is printed.
+def refuse(exc_type, exc, tb):
+    if isinstance(exc, urllib.error.HTTPError):
+        print(f"    REFUSED (Nautobot API error): {getattr(exc, 'nb_call', exc.url)} "
+              f"-> HTTP {exc.code} {exc.reason}. {detail_of(exc)}".rstrip())
+    elif isinstance(exc, urllib.error.URLError):
+        print(f"    REFUSED (Nautobot API unreachable): {BASE} — {exc.reason}")
+    else:
+        sys.__excepthook__(exc_type, exc, tb)
+sys.excepthook = refuse
 
 def nb(method, path, data=None):
     req = urllib.request.Request(
@@ -1966,8 +1992,35 @@ def nb(method, path, data=None):
         data=json.dumps(data).encode() if data is not None else None,
         headers={"Authorization": f"Token {TOKEN}", "Content-Type": "application/json"},
         method=method)
-    with urllib.request.urlopen(req, context=CTX, timeout=30) as r:
-        return json.loads(r.read()) if r.status != 204 else {}
+    try:
+        with urllib.request.urlopen(req, context=CTX, timeout=30) as r:
+            return json.loads(r.read()) if r.status != 204 else {}
+    except urllib.error.HTTPError as e:
+        e.nb_call = f"{method} {path}"
+        raise
+
+def enqueue(method, path, data, what):
+    """POST that queues Celery work, retried while no worker is registered."""
+    deadline = time.time() + WORKER_WAIT
+    waiting = False
+    while True:
+        try:
+            return nb(method, path, data)
+        except urllib.error.HTTPError as e:
+            if e.code != 503:
+                raise
+            if time.time() >= deadline:
+                print(f"    REFUSED (no Celery worker): Nautobot still answers 503 to the {what} "
+                      f"request after {WORKER_WAIT} s. {detail_of(e)}".rstrip())
+                print("      Check:  docker compose ps celery_worker")
+                print("              docker compose logs --tail 100 celery_worker")
+                print("      Re-run './setup.sh -v <your train> --with-nfv-jobs' once it is healthy.")
+                sys.exit(1)
+            if not waiting:
+                print(f"    waiting for a Celery worker (up to {WORKER_WAIT} s) — "
+                      "Nautobot answered 503, the worker is still starting...", flush=True)
+                waiting = True
+            time.sleep(5)
 
 def status_of(result_id):
     d = nb("GET", f"/extras/job-results/{result_id}/")
@@ -1997,7 +2050,7 @@ else:
     print(f"    repo: created {repo['name']!r} (branch {BRANCH})")
 
 # 2. Sync.
-sync = nb("POST", f"/extras/git-repositories/{repo['id']}/sync/")
+sync = enqueue("POST", f"/extras/git-repositories/{repo['id']}/sync/", None, "repo sync")
 st = wait_result(sync["job_result"]["id"], "sync", 180)
 print(f"    sync: {st}")
 if st != "SUCCESS":
@@ -2023,7 +2076,7 @@ boot = next((j for j in mine if j.get("name") == "Bootstrap NFV Data Model"), No
 if boot is None:
     print("    WARNING: 'Bootstrap NFV Data Model' not found among the repo's jobs.")
     sys.exit(1)
-run = nb("POST", f"/extras/jobs/{boot['id']}/run/", {"data": {}})
+run = enqueue("POST", f"/extras/jobs/{boot['id']}/run/", {"data": {}}, "bootstrap run")
 st = wait_result(run["job_result"]["id"], "bootstrap", 120)
 print(f"    bootstrap: {st}")
 if st != "SUCCESS":
