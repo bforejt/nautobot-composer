@@ -951,6 +951,14 @@ docker compose build
 docker compose up -d
 ```
 
+### TACACS+: every AD login fails with "No answer from LDAP backend."
+
+In the TACACS access log (`/var/lib/tac_plus-ng/log/access/<date>.log` inside the `tacacs` container), every user, valid or not, shows `login failed (backend error) [No answer from LDAP backend.]`, even though the directory is reachable over LDAPS.
+
+Cause: an upstream bug in `mavis_tacplus_ldap.py`, added in commit `cee4709` ("enable TCP keepalives", 2026-08-01) and still on master. The module calls `setsockopt()` on `conn.strategy.connection`. Under ldap3's sync strategy that's the ldap3 `Connection` object, not a socket. The resulting `AttributeError` is swallowed by a bare `except:` and reported as "No answer from LDAP backend."
+
+`tacacs/Dockerfile` patches the line to use `conn.socket`, with a `grep` guard that fails the build if upstream changes it, so a commit bump forces a re-check. If you see this symptom, rebuild the image: `docker compose build tacacs && docker compose up -d --no-deps tacacs`.
+
 ### GitLab won't start — port 8080 / 8443 / 2222 already in use
 
 The GitLab opt-in profile binds 8080 (HTTP), 8443 (HTTPS), and 2222 (SSH) on the host. If something else on the host is using one of those, GitLab fails to start.

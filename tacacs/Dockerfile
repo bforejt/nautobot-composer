@@ -43,6 +43,16 @@ RUN apk add --no-cache pcre2 openssl c-ares python3 py3-ldap3 \
     && install -m 0755 mavis/python/mavis.py /usr/local/lib/mavis/mavis.py \
     && install -m 0755 mavis/python/mavis_tacplus_ldap.py /usr/local/lib/mavis/mavis_tacplus_ldap.py \
     && test -s /usr/local/lib/mavis/mavis_tacplus_ldap.py \
+    # Upstream bug (cee4709, 2026-08-01, still on master): the TCP-keepalive
+    # tweak calls setsockopt() on conn.strategy.connection, which under ldap3's
+    # SYNC strategy is the ldap3 Connection, not a socket.  The AttributeError
+    # lands in a bare `except:`, so EVERY lookup answers "No answer from LDAP
+    # backend." and no AD user can log in.  conn.socket is the real socket.
+    # The grep guard fails the build if upstream changes that line, so a
+    # commit bump forces a re-check of this patch.
+    && sed -i 's/raw_socket = conn\.strategy\.connection$/raw_socket = conn.socket/' \
+        /usr/local/lib/mavis/mavis_tacplus_ldap.py \
+    && grep -q 'raw_socket = conn\.socket$' /usr/local/lib/mavis/mavis_tacplus_ldap.py \
     && cd / \
     && rm -rf /tmp/event-driven-servers-* \
     && apk del .build
