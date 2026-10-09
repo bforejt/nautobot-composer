@@ -231,6 +231,10 @@ def main():
         sys.exit(1)
 
     tls_kwargs = configure_ad_tls()
+    if os.environ.get("TACACS_OPEN_DEFAULT", "true").strip().lower() == "true":
+        log("WARNING: TACACS_OPEN_DEFAULT=true: a catch-all client accepts ANY source IP "
+            "holding the default key. Needed only on Docker Desktop (NAT hides device "
+            "IPs); on a native Linux engine set it to false and tag devices in Nautobot")
 
     daemon = subprocess.Popen([DAEMON, render.CURRENT_CFG])
     with open(PID_FILE, "w") as fh:

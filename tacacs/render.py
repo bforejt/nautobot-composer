@@ -94,9 +94,13 @@ def fetch_devices():
     if not token:
         return None
 
+    # `tags` rides along so a MISSING tag can be told apart from an outage:
+    # Nautobot then errors the `devices` field ("... is not one of the
+    # available choices") but answers `tags: []`.
     query = {
         "query": """
             query ($tag: [String]) {
+              tags(name: $tag) { name }
               devices(tags: $tag) {
                 name
                 primary_ip4 { host }
@@ -120,12 +124,23 @@ def fetch_devices():
         log(f"Nautobot query failed ({exc}) — keeping last-good config")
         return None
 
+    data = payload.get("data") or {}
+    if data.get("tags") == []:
+        # Not an outage: the tag doesn't exist, so no device CAN be tagged and
+        # the true device list is empty.  Rendering keeps .env changes (AD,
+        # groups, policy) from silently never taking effect.  Logged every
+        # cycle until the tag exists.
+        log(f"ERROR: TACACS_DEVICE_TAG '{tag}' does not exist in Nautobot, so no device "
+            "can be served; rendering with NO devices. Create the tag (content type "
+            "dcim | device) and tag the devices.")
+        return []
+
     if payload.get("errors"):
         log(f"Nautobot GraphQL errors: {payload['errors']} — keeping last-good config")
         return None
 
     devices = []
-    for dev in payload.get("data", {}).get("devices", []):
+    for dev in data.get("devices") or []:
         ip = (dev.get("primary_ip4") or {}).get("host")
         if not ip:
             log(f"device '{dev.get('name')}' has no primary IPv4 — skipped")
@@ -257,10 +272,10 @@ def build_config(devices, dry_run=False):
     out.append(f"        key = {cfg_quote(health_pw)}")
     out.append("    }")
     if open_default:
-        out.append("    # Catch-all client with the stack default key.  Required when")
-        out.append("    # Docker's NAT masks real device source IPs (always on Docker")
-        out.append("    # Desktop).  Set TACACS_OPEN_DEFAULT=false on hosts where real")
-        out.append("    # client IPs reach the container, for RFC 8907 §10.5.2 allow-listing.")
+        out.append("    # Catch-all client with the stack default key: ANY source IP holding")
+        out.append("    # that one key may authenticate.  Needed only where Docker's NAT masks")
+        out.append("    # device source IPs (Docker Desktop).  A native Linux engine preserves")
+        out.append("    # them: set TACACS_OPEN_DEFAULT=false there (RFC 8907 §10.5.2).")
         out.append("    device world {")
         out.append("        address = 0.0.0.0/0")
         out.append(f"        key = {cfg_quote(default_key)}")
