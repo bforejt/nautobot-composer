@@ -810,6 +810,9 @@ All values live in `.env` (see `env.example` for the full list). None are needed
 |---|---|
 | `TACACS_AD_URLS` | Space-separated LDAP URL(s) of your DCs (use `ldaps://` — the user's password transits this). Empty ⇒ AD disabled, nobody can log in. |
 | `TACACS_AD_BASE_DN` / `TACACS_AD_BIND_DN` / `TACACS_AD_BIND_PASSWORD` | Search base and (optional) service-account bind for user/group lookups. |
+| `TACACS_AD_TLS_VERIFY` | LDAPS certificate validation, **on** by default (`false` turns it off; lab only, because the users' passwords cross this connection). |
+| `TACACS_AD_CA_FILE` | CA certificate the DC cert must chain to. Default: `./secrets/tacacs/ad-ca.pem` if it exists, else the system CA store. A file named here that doesn't exist makes every AD login fail (fail closed). |
+| `TACACS_AD_TLS_NAME` | Name(s) the DC certificate carries (CN/SAN), space-separated. Needed when `TACACS_AD_URLS` uses IP addresses, since the certificate is matched against the URL host *or* one of these names. |
 | `TACACS_ADMIN_GROUP` / `TACACS_READONLY_GROUP` | AD group names mapped to priv-15 / priv-1. |
 | `TACACS_BREAKGLASS_USER` | Username of the server-side break-glass local admin (default `breakglass`; see below). Its password hash lives in `./secrets/tacacs/breakglass.hash`, **not** `.env`. |
 | `TACACS_NAUTOBOT_TOKEN` | Nautobot API token that activates the render loop (read-only access is enough). Auto-filled with the superuser token by `setup.sh --with-tacacs` on the **lab** tier; set a scoped token yourself on staging/production. Empty ⇒ loop idle, static seed served. |
@@ -958,6 +961,23 @@ In the TACACS access log (`/var/lib/tac_plus-ng/log/access/<date>.log` inside th
 Cause: an upstream bug in `mavis_tacplus_ldap.py`, added in commit `cee4709` ("enable TCP keepalives", 2026-08-01) and still on master. The module calls `setsockopt()` on `conn.strategy.connection`. Under ldap3's sync strategy that's the ldap3 `Connection` object, not a socket. The resulting `AttributeError` is swallowed by a bare `except:` and reported as "No answer from LDAP backend."
 
 `tacacs/Dockerfile` patches the line to use `conn.socket`, with a `grep` guard that fails the build if upstream changes it, so a commit bump forces a re-check. If you see this symptom, rebuild the image: `docker compose build tacacs && docker compose up -d --no-deps tacacs`.
+
+### TACACS+: AD logins fail after enabling LDAPS validation
+
+A certificate problem shows up in the access log only as `No answer from LDAP backend.` (the MAVIS module hides the cause), so the entrypoint checks each `ldaps://` URL at container start and names the problem:
+
+```bash
+docker compose logs tacacs | grep 'AD TLS check'
+```
+
+| Log says | Fix |
+|---|---|
+| `certificate verify failed: unable to get local issuer certificate` | The DC cert isn't signed by a trusted CA. Put the DC's CA certificate at `./secrets/tacacs/ad-ca.pem` (or set `TACACS_AD_CA_FILE`), then `docker compose up -d --no-deps tacacs`. |
+| `doesn't match any name in ['<ip>']` | `TACACS_AD_URLS` uses an IP the certificate doesn't carry. Set `TACACS_AD_TLS_NAME` to the certificate's DNS name, or use that name in the URL. |
+| `TACACS_AD_CA_FILE=… does not exist` | Fix the path; it's the path *inside* the container (`/secrets/tacacs/...`). |
+| `certificate has expired` | Renew the DC certificate, then re-export its CA if the CA changed. |
+
+`TACACS_AD_TLS_VERIFY=false` is the (lab-only) escape hatch; the entrypoint logs a WARNING while it's set.
 
 ### GitLab won't start — port 8080 / 8443 / 2222 already in use
 
