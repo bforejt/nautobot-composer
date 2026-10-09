@@ -67,6 +67,13 @@ RUN apk add --no-cache pcre2 openssl c-ares python3 py3-ldap3 \
     && rm -rf /tmp/event-driven-servers-* \
     && apk del .build
 
+# Security/robustness patches from the AD review (see the script's header).
+# Every anchor must match exactly once, or the build fails.
+COPY patch_mavis.py /tmp/patch_mavis.py
+RUN python3 /tmp/patch_mavis.py /usr/local/lib/mavis/mavis_tacplus_ldap.py \
+    && python3 -m py_compile /usr/local/lib/mavis/mavis_tacplus_ldap.py \
+    && rm -rf /tmp/patch_mavis.py /usr/local/lib/mavis/__pycache__
+
 # Upstream's MAVIS Python binding must be importable by the LDAP module.
 ENV PYTHONPATH=/usr/local/lib/mavis
 

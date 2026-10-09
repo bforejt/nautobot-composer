@@ -104,10 +104,57 @@ def ad_tls_kwargs():
     else:
         log(f"no AD CA file ({CA_FILE_DEFAULT} absent, TACACS_AD_CA_FILE unset): "
             "trusting the system CA store only")
-    names = os.environ.get("TACACS_AD_TLS_NAME", "").split()
+    names = []
+    for n in os.environ.get("TACACS_AD_TLS_NAME", "").split():
+        if "*" in n:
+            # ldap3 treats a valid name of "*" as "accept any certificate name".
+            log(f"ERROR: TACACS_AD_TLS_NAME entry '{n}' contains '*', ignored "
+                "(wildcards would disable the certificate name check)")
+            continue
+        names.append(n)
     if names:
         kwargs["valid_names"] = names
     return kwargs
+
+
+def configure_ad_urls(verify):
+    """With certificate validation on, never let a plain ldap:// URL carry the
+    bind and user passwords in cleartext: the module's STARTTLS branch is
+    unreachable, so ldap:// means cleartext simple binds.  Drop such URLs
+    from LDAP_HOSTS (fail closed) and say so."""
+    urls = os.environ.get("TACACS_AD_URLS", "").split()
+    if not urls or not verify:
+        return
+    keep = [u for u in urls if u.lower().startswith("ldaps://")]
+    for u in urls:
+        if u not in keep:
+            log(f"ERROR: TACACS_AD_URLS entry '{u}' is not ldaps:// and is IGNORED: it would "
+                "send AD passwords in cleartext (use ldaps://, or TACACS_AD_TLS_VERIFY=false)")
+    if not keep:
+        log("ERROR: no usable ldaps:// URL left; every AD login will fail")
+    # The module falls back to ldaps://localhost when LDAP_HOSTS is empty.
+    os.environ["LDAP_HOSTS"] = " ".join(keep) if keep else "ldaps://127.0.0.1:1"
+
+
+def configure_ad_groups():
+    """Pin the group mapping to exact DNs.  The module maps any memberOf whose
+    CN is NetAdmins, in ANY OU, to the admin group, so whoever can create or
+    rename a group anywhere could grant themselves priv 15.  With
+    TACACS_AD_GROUP_BASE_DN set, only <group>,<base DN> counts (the module
+    prefixes (?i), so the match is case-insensitive)."""
+    import re
+    base = os.environ.get("TACACS_AD_GROUP_BASE_DN", "").strip()
+    groups = [g for g in (os.environ.get("TACACS_ADMIN_GROUP", "").strip(),
+                          os.environ.get("TACACS_READONLY_GROUP", "").strip()) if g]
+    if not os.environ.get("TACACS_AD_URLS", "").strip() or not groups:
+        return
+    if not base:
+        log("WARNING: TACACS_AD_GROUP_BASE_DN unset: a group with the same CN as "
+            f"{' / '.join(groups)} in ANY OU grants that privilege")
+        return
+    os.environ["LDAP_MEMBEROF_FILTER"] = (
+        "^cn=(?:" + "|".join(re.escape(g) for g in groups) + ")," + re.escape(base) + "$")
+    log(f"AD group mapping pinned to {', '.join(groups)} under {base}")
 
 
 def configure_ad_tls():
@@ -117,6 +164,8 @@ def configure_ad_tls():
     .env text."""
     os.environ.pop("TLS_OPTIONS", None)
     kwargs = ad_tls_kwargs()
+    configure_ad_urls(kwargs is not None)
+    configure_ad_groups()
     if kwargs is None:
         return None
     parts = ["validate=ssl.CERT_REQUIRED"]
@@ -133,7 +182,7 @@ def probe_ad_tls(kwargs):
     reports every failure as "No answer from LDAP backend."  Runs in a
     thread: the daemon never waits for AD."""
     import ldap3
-    for url in os.environ.get("TACACS_AD_URLS", "").split():
+    for url in os.environ.get("LDAP_HOSTS", "").split():
         if not url.lower().startswith("ldaps://"):
             log(f"AD TLS check {url}: not ldaps://, skipped")
             continue
