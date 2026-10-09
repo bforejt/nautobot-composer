@@ -53,6 +53,16 @@ RUN apk add --no-cache pcre2 openssl c-ares python3 py3-ldap3 \
     && sed -i 's/raw_socket = conn\.strategy\.connection$/raw_socket = conn.socket/' \
         /usr/local/lib/mavis/mavis_tacplus_ldap.py \
     && grep -q 'raw_socket = conn\.socket$' /usr/local/lib/mavis/mavis_tacplus_ldap.py \
+    # Upstream TLS_OPTIONS is unusable: the module eval()s it into a dict and
+    # passes that to ldap3.Server(tls=...), which raises "invalid Tls object"
+    # for anything but an ldap3.Tls, and its documented example uses `ssl`,
+    # which the module never imports.  Build a real ldap3.Tls from the same
+    # keyword syntax instead.  entrypoint.py composes TLS_OPTIONS from the
+    # TACACS_AD_TLS_* settings.  Same grep guard as above.
+    && sed -i 's/tls = eval("{ " + TLS_OPTIONS + "}")$/import ssl; tls = ldap3.Tls(**eval("dict(" + TLS_OPTIONS + ")"))/' \
+        /usr/local/lib/mavis/mavis_tacplus_ldap.py \
+    && grep -qF 'import ssl; tls = ldap3.Tls(**eval("dict(" + TLS_OPTIONS + ")"))' \
+        /usr/local/lib/mavis/mavis_tacplus_ldap.py \
     && cd / \
     && rm -rf /tmp/event-driven-servers-* \
     && apk del .build

@@ -71,6 +71,83 @@ def prune_logs():
                 pass
 
 
+CA_FILE_DEFAULT = "/secrets/tacacs/ad-ca.pem"
+
+
+def ad_tls_kwargs():
+    """ldap3.Tls keyword arguments for the AD connection, from TACACS_AD_TLS_*.
+
+    Returns None when certificate validation is off (or AD is not configured).
+    Fails closed: validation is on unless TACACS_AD_TLS_VERIFY is exactly
+    "false", and an explicitly named CA file that is missing is still passed
+    through, so every AD login fails visibly instead of silently trusting less.
+    """
+    import ssl
+    if not os.environ.get("TACACS_AD_URLS", "").strip():
+        return None
+    verify = os.environ.get("TACACS_AD_TLS_VERIFY", "true").strip().lower() or "true"
+    if verify == "false":
+        log("WARNING: TACACS_AD_TLS_VERIFY=false: the DC certificate is NOT "
+            "validated, so anything that can intercept the LDAPS connection can "
+            "collect users' AD passwords")
+        return None
+    if verify != "true":
+        log(f"WARNING: TACACS_AD_TLS_VERIFY='{verify}' is not true/false; validating")
+    kwargs = {"validate": ssl.CERT_REQUIRED}
+    ca = os.environ.get("TACACS_AD_CA_FILE", "").strip()
+    if ca:
+        if not os.path.isfile(ca):
+            log(f"ERROR: TACACS_AD_CA_FILE={ca} does not exist; every AD login will fail")
+        kwargs["ca_certs_file"] = ca
+    elif os.path.isfile(CA_FILE_DEFAULT):
+        kwargs["ca_certs_file"] = CA_FILE_DEFAULT
+    else:
+        log(f"no AD CA file ({CA_FILE_DEFAULT} absent, TACACS_AD_CA_FILE unset): "
+            "trusting the system CA store only")
+    names = os.environ.get("TACACS_AD_TLS_NAME", "").split()
+    if names:
+        kwargs["valid_names"] = names
+    return kwargs
+
+
+def configure_ad_tls():
+    """Export TLS_OPTIONS for the MAVIS LDAP module (inherited by the daemon's
+    MAVIS children).  The module eval()s the value, so it is built only from
+    repr()-quoted strings and the ssl.CERT_REQUIRED constant, never from raw
+    .env text."""
+    os.environ.pop("TLS_OPTIONS", None)
+    kwargs = ad_tls_kwargs()
+    if kwargs is None:
+        return None
+    parts = ["validate=ssl.CERT_REQUIRED"]
+    parts += [f"{k}={v!r}" for k, v in kwargs.items() if k != "validate"]
+    os.environ["TLS_OPTIONS"] = ", ".join(parts)
+    log("AD LDAPS certificate validation ON (" +
+        ", ".join(f"{k}={v}" for k, v in kwargs.items() if k != "validate") + ")")
+    return kwargs
+
+
+def probe_ad_tls(kwargs):
+    """One TLS handshake per ldaps:// URL with the module's exact settings, so
+    a certificate problem is named in the log.  The MAVIS module itself
+    reports every failure as "No answer from LDAP backend."  Runs in a
+    thread: the daemon never waits for AD."""
+    import ldap3
+    for url in os.environ.get("TACACS_AD_URLS", "").split():
+        if not url.lower().startswith("ldaps://"):
+            log(f"AD TLS check {url}: not ldaps://, skipped")
+            continue
+        try:
+            server = ldap3.Server(url, tls=ldap3.Tls(**kwargs), connect_timeout=5)
+            conn = ldap3.Connection(server, receive_timeout=5)
+            conn.open()
+            conn.unbind()
+            log(f"AD TLS check {url}: certificate OK")
+        except Exception as exc:  # report, never crash the supervisor
+            log(f"AD TLS check {url}: FAILED ({exc}); AD logins via this URL "
+                "will fail with 'No answer from LDAP backend.'")
+
+
 def render_loop(get_pid):
     interval = max(30, _int_env("TACACS_RENDER_INTERVAL", 300))
     have_token = bool(os.environ.get("TACACS_NAUTOBOT_TOKEN", "").strip())
@@ -104,6 +181,8 @@ def main():
         log("FATAL: no last-good config and the seed render failed")
         sys.exit(1)
 
+    tls_kwargs = configure_ad_tls()
+
     daemon = subprocess.Popen([DAEMON, render.CURRENT_CFG])
     with open(PID_FILE, "w") as fh:
         fh.write(str(daemon.pid))
@@ -121,6 +200,8 @@ def main():
     threading.Thread(
         target=render_loop, args=(lambda: daemon.pid,), daemon=True
     ).start()
+    if tls_kwargs is not None:
+        threading.Thread(target=probe_ad_tls, args=(tls_kwargs,), daemon=True).start()
 
     # The daemon is the container's reason to exist: if it dies, exit with its
     # status and let `restart: unless-stopped` bring the pair back up.
