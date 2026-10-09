@@ -785,7 +785,7 @@ Nautobot is the single **authoring surface** for the slow-moving data (which dev
 | Failure | Behavior |
 |---|---|
 | **Nautobot unreachable** | Render loop keeps the **last-good** config serving. Device logins are unaffected — your source of truth is never in the login path. |
-| **Active Directory unreachable** | MAVIS returns an error → device method lists fall through to `local` (ship the lockout-safe config below). |
+| **Active Directory unreachable** | MAVIS answers within about a second, and the rendered `authentication fallback = deny` turns that into a TACACS **ERROR** for interactive (ASCII) logins, so IOS-style method lists fall through to `local` (ship the lockout-safe config below). PAP requests get **FAIL** instead (hardcoded upstream), so PAP-only clients can't fall back; the server-side break-glass user still works for them. |
 | **AD *and* Nautobot both down** | The server-side **break-glass** local admin (below) still authenticates against a local crypt hash — AD is never consulted for it — so you keep a priv-15 login even in a total-outage without relying on each device's own `local` fallback. |
 | **Bad/invalid render** | `tac_plus-ng -P` rejects the candidate; the daemon never loads a broken config. |
 | **First boot, nothing configured** | A safe **seed** config (no devices, no AD) starts healthy and accepts nobody until you configure it. |
@@ -812,6 +812,7 @@ All values live in `.env` (see `env.example` for the full list). None are needed
 | `TACACS_AD_BASE_DN` / `TACACS_AD_BIND_DN` / `TACACS_AD_BIND_PASSWORD` | Search base and (optional) service-account bind for user/group lookups. |
 | `TACACS_AD_TLS_VERIFY` | LDAPS certificate validation, **on** by default (`false` turns it off; lab only, because the users' passwords cross this connection). |
 | `TACACS_AD_CA_FILE` | CA certificate the DC cert must chain to. Default: `./secrets/tacacs/ad-ca.pem` if it exists, else the system CA store. A file named here that doesn't exist makes every AD login fail (fail closed). |
+| `TACACS_AD_GROUP_BASE_DN` | DN of the container holding the two groups (e.g. `CN=Users,DC=ad,DC=example,DC=com`). Pins the mapping to exactly `CN=<group>,<this DN>`. Unset, a group with the same CN in **any** OU grants the privilege (the entrypoint logs a WARNING). |
 | `TACACS_AD_TLS_NAME` | Name(s) the DC certificate carries (CN/SAN), space-separated. Needed when `TACACS_AD_URLS` uses IP addresses, since the certificate is matched against the URL host *or* one of these names. |
 | `TACACS_ADMIN_GROUP` / `TACACS_READONLY_GROUP` | AD group names mapped to priv-15 / priv-1. |
 | `TACACS_BREAKGLASS_USER` | Username of the server-side break-glass local admin (default `breakglass`; see below). Its password hash lives in `./secrets/tacacs/breakglass.hash`, **not** `.env`. |
@@ -978,6 +979,18 @@ docker compose logs tacacs | grep 'AD TLS check'
 | `certificate has expired` | Renew the DC certificate, then re-export its CA if the CA changed. |
 
 `TACACS_AD_TLS_VERIFY=false` is the (lab-only) escape hatch; the entrypoint logs a WARNING while it's set.
+
+### TACACS+: AD login behavior from the MAVIS hardening
+
+`tacacs/patch_mavis.py` patches upstream's LDAP module at build time (each patch must match exactly once, or the build fails). It produces these visible effects:
+
+| You see | Why | What to do |
+|---|---|---|
+| A **disabled** AD account is refused even for authorization-only lookups | The AD user filter excludes `userAccountControl` bit 2. Upstream returned group membership (e.g. priv 15) for disabled users on INFO lookups. | Expected. |
+| A user who is in a group called `NetAdmins` gets no privilege | With `TACACS_AD_GROUP_BASE_DN` set, only `CN=<group>,<that DN>` counts. | Put the user in the real group, or fix `TACACS_AD_GROUP_BASE_DN`. |
+| `ERROR: TACACS_AD_URLS entry 'ldap://…' is not ldaps:// and is IGNORED` | With validation on, plain `ldap://` would send passwords in cleartext (the module's STARTTLS branch is unreachable). | Use `ldaps://`. |
+| `ERROR: TACACS_AD_TLS_NAME entry '…' contains '*', ignored` | ldap3 treats `*` as "accept any certificate name". | List the real name(s). |
+| Each failed login counts **once** toward AD lockout | Upstream re-bound as the *previous* user on the next request, so failures counted twice and stale passwords locked users out after a password change. The module now re-binds as the service account on every request. | Expected. |
 
 ### GitLab won't start — port 8080 / 8443 / 2222 already in use
 

@@ -587,6 +587,9 @@ services:
       TACACS_AD_TLS_VERIFY: "${TACACS_AD_TLS_VERIFY:-true}"
       TACACS_AD_CA_FILE: "${TACACS_AD_CA_FILE:-}"
       TACACS_AD_TLS_NAME: "${TACACS_AD_TLS_NAME:-}"
+      # DN of the container holding the AD groups below; pins the mapping to
+      # exactly <group>,<this DN> (otherwise a same-named group in any OU counts).
+      TACACS_AD_GROUP_BASE_DN: "${TACACS_AD_GROUP_BASE_DN:-}"
       # AD group -> privilege mapping (rendered into the ruleset).
       TACACS_ADMIN_GROUP: "${TACACS_ADMIN_GROUP:-}"
       TACACS_READONLY_GROUP: "${TACACS_READONLY_GROUP:-}"

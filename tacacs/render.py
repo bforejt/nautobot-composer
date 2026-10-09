@@ -240,6 +240,12 @@ def build_config(devices, dry_run=False):
         out.append("    user backend = mavis")
         out.append("    login backend = mavis")
         out.append("    pap backend = mavis")
+        # Upstream defaults to `authentication fallback = permit`, which turns
+        # an AD/backend failure into a TACACS FAIL, and on FAIL a device does
+        # NOT try its next method (`local`).  deny makes it a TACACS ERROR, so
+        # the device falls through to `local` as documented.  Local users
+        # defined here (break-glass, healthcheck) are unaffected.
+        out.append("    authentication fallback = deny")
     else:
         out.append("    # TACACS_AD_URLS is unset — no MAVIS/AD backend; only the")
         out.append("    # local loopback healthcheck user can authenticate.")
