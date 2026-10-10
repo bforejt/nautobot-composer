@@ -442,6 +442,19 @@ generate_api_token() {
 # Register Image job can opt in per run.
 # ---------------------------------------------------------------------------
 
+# TACACS_OPEN_DEFAULT for a NEW .env.  Docker Desktop's port publishing
+# rewrites device source IPs, so the catch-all client (any IP + the shared
+# default key) is required there.  A native Linux engine preserves them
+# (iptables DNAT), so per-device allow-listing works and the catch-all, an
+# open door for anyone holding that one key, stays off.
+tacacs_open_default() {
+    if docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'docker desktop'; then
+        echo true
+    else
+        echo false
+    fi
+}
+
 detect_primary_ip() {
     case "$(uname -s)" in
         Darwin)
@@ -846,7 +859,7 @@ FIRMWARE_BASE_URL_HTTPS=${FW_HTTPS_URL}
 # daemon serves a safe seed config (no device can authenticate).
 # ---------------------------------------------------------------------------
 TACACS_DEFAULT_KEY=${TACACS_KEY}
-TACACS_OPEN_DEFAULT=true
+TACACS_OPEN_DEFAULT=$(tacacs_open_default)
 TACACS_AD_URLS=
 TACACS_AD_BASE_DN=
 TACACS_AD_BIND_DN=
@@ -985,7 +998,7 @@ if [[ -f "$ENV_FILE" ]] && ! grep -qE '^TACACS_OPEN_DEFAULT=' "$ENV_FILE"; then
 # daemon serves a safe seed config (no device can authenticate).
 # ---------------------------------------------------------------------------
 TACACS_DEFAULT_KEY=${TACACS_KEY}
-TACACS_OPEN_DEFAULT=true
+TACACS_OPEN_DEFAULT=$(tacacs_open_default)
 TACACS_AD_URLS=
 TACACS_AD_BASE_DN=
 TACACS_AD_BIND_DN=
